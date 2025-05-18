@@ -1,0 +1,67 @@
+#pragma once
+#include "jay/if.h"
+#include "jay/util/trie.h"
+#include "jay/ip/common.h"
+
+namespace jay::ip {
+class IPRouter {
+public:
+  struct Route {
+    Interface* iface;
+    std::optional<IPAddr> nh_iaddr;
+    std::optional<IPAddr> src_iaddr;
+  };
+
+  struct Destination {
+    Route route;
+  };
+
+  enum class Error {
+    NO_ROUTE
+  };
+
+  Result<Destination*, Error> route(IPAddr dst_addr) {
+    if (dst_cache.contains(dst_addr))
+      return &dst_cache[dst_addr];
+
+    Destination& dst = dst_cache[dst_addr];
+    auto [match_prefix, match_route] = rt_table.match_longest(dst_addr.v4(), 32);
+    if (match_route == nullptr)
+      return ResultError(Error::NO_ROUTE);
+    dst.route = *match_route;
+
+    return &dst;
+  }
+  
+  Result<Destination*, Error> route(PBuf& packet) {
+    IPAddr dst_addr = packet->ip().dst_addr();
+    auto rt_result = route(dst_addr);
+    if (rt_result.has_error())
+      return rt_result;
+    Destination* dst = rt_result.value();
+
+    if (dst->route.nh_iaddr.has_value()) {
+      packet->nh_iaddr = dst->route.nh_iaddr.value();
+    } else {
+      packet->nh_iaddr = packet->ip().dst_addr();
+    }
+    if (dst->route.src_iaddr.has_value()) {
+      packet->ip().src_addr() = dst->route.src_iaddr.value();
+    }
+    packet->iface = dst->route.iface;
+  
+    return rt_result;
+  }
+
+  void add_route(IPAddr prefix, size_t prefix_len, Interface* iface, std::optional<IPAddr> nh_iaddr, std::optional<IPAddr> src_iaddr) {
+    rt_table.emplace(prefix.v4(), prefix_len, Route {
+      .iface = iface,
+      .nh_iaddr = nh_iaddr,
+      .src_iaddr = src_iaddr
+    });
+  }
+private:
+  hash_table<IPAddr, Destination> dst_cache;
+  BitTrie<IPv4Addr, Route> rt_table;
+};
+}

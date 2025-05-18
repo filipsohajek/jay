@@ -1,0 +1,94 @@
+#pragma once
+
+#include "jay/buf/struct.h"
+#include "jay/ip/common.h"
+#include "jay/ip/hdr_error.h"
+#include "jay/ip/icmp_msg.h"
+namespace jay::ip {
+struct ICMPv4HeaderTag {};
+struct ICMPHeader : public std::variant<ICMPv4HeaderTag>,
+                    BufStruct<ICMPHeader> {
+  using std::variant<ICMPv4HeaderTag>::variant;
+  using BufStruct<ICMPHeader>::BufStruct;
+  using ErrorType = ICMPHeaderError;
+
+private:
+  ICMPHeader(IPVersion ver, StructWriter cur)
+      : std::variant<ICMPv4HeaderTag>(
+            ver == IPVersion::V4 ? std::in_place_type_t<ICMPv4HeaderTag>{}
+                                 : std::in_place_type_t<ICMPv4HeaderTag>{}),
+        BufStruct<ICMPHeader>(cur) {}
+
+public:
+  STRUCT_FIELD(type, 0, uint8_t);
+  STRUCT_FIELD(code, 1, uint8_t);
+  STRUCT_FIELD_LE(checksum, 2, uint16_t);
+
+private:
+  template <template <typename> typename Accessor> auto message_field() const {
+    return TaggedUnionField<decltype(type()), Accessor, ICMPEchoRequestMessage,
+                            ICMPEchoReplyMessage>{cur.span().subspan(4),
+                                                  type()};
+  }
+
+public:
+  auto message() {
+    if (std::holds_alternative<ICMPv4HeaderTag>(*this)) {
+      return message_field<ICMPv4TypeAccessor>().variant();
+    }
+    throw std::runtime_error("not implemented");
+  }
+
+  template <typename TMsg> static size_t size_hint(IPVersion, TMsg &) {
+    if constexpr (std::is_same_v<TMsg, ICMPEchoRequestMessage>)
+      return 8;
+    else if constexpr (std::is_same_v<TMsg, ICMPEchoReplyMessage>)
+      return 8;
+    else
+      return 4;
+  }
+
+  static Result<ICMPHeader, ICMPHeaderError> read(StructWriter cur, IPVersion) {
+    return BufStruct<ICMPHeader>::read(cur);
+  }
+
+  template <typename TMsg>
+  static Result<ICMPHeader, ICMPHeaderError>
+  construct(StructWriter cur, IPVersion ver, TMsg &message) {
+    ICMPHeader hdr(ver, cur);
+    if (cur.size() < 4)
+      return ResultError(ICMPHeaderError::OUT_OF_BOUNDS);
+    cur.slice(0, 4).reset();
+    if (ver == IPVersion::V4) {
+      auto msg_res = hdr.message_field<ICMPv4TypeAccessor>().set<TMsg>();
+      if (msg_res.has_value())
+        message = msg_res.value();
+      else
+        return ResultError(ICMPHeaderError::MESSAGE_ERROR);
+    }
+    return hdr;
+  }
+
+  size_t size() const {
+    if (std::holds_alternative<ICMPv4HeaderTag>(*this)) {
+      return 4 + message_field<ICMPv4TypeAccessor>().size();
+    }
+    throw std::runtime_error("not implemented");
+  }
+
+  bool is_v4() const { return std::holds_alternative<ICMPv4HeaderTag>(*this); }
+
+  friend std::ostream &operator<<(std::ostream &os, ICMPHeader &addr) {
+    os << "ICMP: version=" << (addr.is_v4() ? 4 : 6) << ", message=";
+    std::visit([&](auto msg) {
+      if constexpr (std::is_same_v<decltype(msg), std::monostate>) {
+        os << "unknown";
+      } else {
+        os << msg; 
+      }
+    }, addr.message());
+    
+    return os;
+  }
+};
+} // namespace jay::ip
