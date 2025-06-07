@@ -11,8 +11,17 @@ void IPStack::ip_input(PBuf packet, IPVersion version) {
   if (!packet->is_ip() && packet->read_net_hdr<IPHeader>(version).has_error())
     return;
   auto ip_hdr = packet->ip();
-  if (!ips.contains(ip_hdr.dst_addr()))
-    return; // TODO: routing unsupported
+  IPAddr dst_addr = ip_hdr.dst_addr();
+  if (!ips.contains(dst_addr) && !dst_addr.is_broadcast()) {
+    packet->forwarded = true;
+    if (packet->ip().ttl() == 0) {
+      output(PBuf::icmp_for<ICMPTimeExceededMessage>(
+        packet->ip().src_addr(), nullptr, TimeExceededType::HOP_LIMIT, &packet->buf()));
+      return;
+    }
+    output(std::move(packet));
+    return;
+  }
   if (ip_hdr.is_v4()) {
     IPFragData frag_data = ip_hdr.v4().frag_data().read().value();
     if (frag_data.more_frags() || (frag_data.frag_offset() > 0)) {
@@ -188,6 +197,12 @@ void IPStack::ip_output_resolve(PBuf packet) {
   uint16_t if_mtu = packet->iface->mtu();
 
   if (packet->size() > if_mtu) {
+    if (packet->ip().is_v4()) {
+      if (packet->ip().v4().frag_data().value().dont_frag()) {
+        icmp_notify_unreachable(packet->ip().src_addr(), UnreachableReason::PACKET_TOO_BIG, std::move(packet));
+        return;
+      }
+    }
     ip_output_fragment(std::move(packet), if_mtu);
   } else {
     ip_output_final(std::move(packet));
@@ -198,6 +213,14 @@ void IPStack::ip_output_fragment(PBuf packet, size_t if_mtu) {
   std::mt19937 mt{};
   uint32_t ident = std::uniform_int_distribution<uint32_t>{}(mt);
   size_t frag_offset = 0;
+  bool last_before = true;
+  if (packet->forwarded) {
+    IPFragData frag_data = packet->ip().v4().frag_data().value();
+    ident = frag_data.identification();
+    last_before = !frag_data.more_frags();
+    frag_offset = frag_data.frag_offset();
+  }
+
   while (packet->size() > 0) {
     PBuf fragment;
     fragment->iface = packet->iface;
@@ -215,7 +238,7 @@ void IPStack::ip_output_fragment(PBuf packet, size_t if_mtu) {
       frag_data.more_frags() = true;
     } else {
       frag_payload_size = packet->size();
-      frag_data.more_frags() = false;
+      frag_data.more_frags() = !last_before;
     }
     frag_data.frag_offset() = frag_offset;
 
@@ -246,7 +269,7 @@ void IPStack::ip_output_final(PBuf packet) {
       },
       packet->tspt_hdr);
 
-  packet->ip().ttl() = 128;
+  packet->ip().ttl() = packet->forwarded ? (packet->ip().ttl() - 1) : 128;
   packet->unmask(packet->ip().size());
   if (packet->ip().is_v4()) {
     auto v4_hdr = packet->ip().v4();

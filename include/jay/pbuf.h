@@ -58,6 +58,7 @@ public:
   std::optional<HWAddr> nh_haddr;
 
   bool local = false;
+  bool forwarded = false;
   
   bool has_last_fragment = false;
 

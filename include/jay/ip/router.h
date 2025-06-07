@@ -49,7 +49,8 @@ public:
     } else {
       packet->nh_iaddr = packet->ip().dst_addr();
     }
-    if (dst->route.src_iaddr.has_value()) {
+
+    if (dst->route.src_iaddr.has_value() && !packet->forwarded) {
       packet->ip().src_addr() = dst->route.src_iaddr.value();
     }
     packet->iface = dst->route.iface;

@@ -18,7 +18,8 @@ enum class TimeExceededType : uint8_t {
 enum class UnreachableReason : uint8_t {
   NETWORK_UNREACHABLE,
   HOST_UNREACHABLE,
-  PORT_UNREACHABLE
+  PORT_UNREACHABLE,
+  PACKET_TOO_BIG
 };
 
 struct ICMPCode {
@@ -38,6 +39,9 @@ struct ICMPCode {
       case UnreachableReason::PORT_UNREACHABLE:
         code = (ver == IPVersion::V4) ? 3 : 0;
         break;
+      case UnreachableReason::PACKET_TOO_BIG:
+        code = (ver == IPVersion::V4) ? 4 : 0;
+        break;
       default:
         code = static_cast<uint8_t>(unreach_code);
     }
@@ -55,6 +59,8 @@ struct ICMPCode {
           return UnreachableReason::HOST_UNREACHABLE;
         case 3:
           return UnreachableReason::PORT_UNREACHABLE;
+        case 4:
+          return UnreachableReason::PACKET_TOO_BIG;
       }
     }
     return static_cast<UnreachableReason>(code);
