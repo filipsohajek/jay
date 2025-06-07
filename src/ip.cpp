@@ -44,9 +44,12 @@ void IPStack::icmp_input(PBuf packet, IPVersion version) {
   auto icmp_res = packet->read_tspt_hdr<ICMPHeader>(version);
   if (icmp_res.has_error())
     return;
-  // TODO: verify ICMP checksum
 
   auto icmp_hdr = packet->icmp();
+  packet->unmask(icmp_hdr.size());
+  if (inet_csum(*packet) != 0x0000)
+    return;
+
   std::visit(
       [&](auto msg) {
         using MsgT = std::remove_cv_t<decltype(msg)>;
@@ -73,6 +76,28 @@ void IPStack::icmp_input(PBuf packet, IPVersion version) {
       icmp_hdr.message());
 }
 
+void IPStack::reassemble_timeout(ReassKey reass_key, Reassembly& reass) {
+  Buf& reass_buf = reass.packet->buf();
+  auto it = reass_buf.begin();
+  while ((it != reass_buf.end()) && it.is_hole()) {
+    it = it.next_chunk();
+  }
+  Buf orig_buf {it.chunk()};
+
+  const auto& [src_ip, dst_ip, ident] = reass_key;
+  PBuf icmp_packet;
+  icmp_packet->reserve_headers();
+  icmp_packet->buf().insert(orig_buf, 0);
+  ICMPTimeExceededMessage timex_msg;
+  icmp_packet->construct_tspt_hdr<ICMPHeader>(src_ip.version(), timex_msg, TimeExceededType::REASSEMBLY); 
+  icmp_packet->unmask(timex_msg.size());
+  auto ip_hdr = icmp_packet->construct_net_hdr<IPHeader>(src_ip.version()).value();
+  ip_hdr.proto() = IPProto::ICMP;
+  ip_hdr.dst_addr() = src_ip;
+  ip_hdr.src_addr() = dst_ip;
+  output(std::move(icmp_packet));
+}
+
 void IPStack::reassemble_single(PBuf packet, IPFragData frag_data) {
   std::tuple<IPAddr, IPAddr, uint32_t> frag_key = {packet->ip().src_addr(),
                                                    packet->ip().dst_addr(),
@@ -80,11 +105,7 @@ void IPStack::reassemble_single(PBuf packet, IPFragData frag_data) {
   Reassembly &reass = reass_queue[frag_key];
   if (reass.packet->size() == 0) {
     reass.timer = timers.create(reassembly_timeout, [this, frag_key](Timer *) {
-      auto reass_it = reass_queue.find(frag_key);
-      if (reass_it == reass_queue.end())
-        return;
-      reass_queue.erase(frag_key);
-      // TODO: ICMP
+      reassemble_timeout(frag_key, reass_queue[frag_key]);
     });
     reass.packet->reserve_headers();
     reass.packet->construct_net_hdr<IPHeader>(packet->ip().version(),
@@ -282,11 +303,34 @@ void IPStack::solicit_haddr(Interface *iface, IPAddr tgt_iaddr,
   }
 }
 
+void IPStack::icmp_notify_unreachable(IPAddr addr, std::optional<PBuf> packet) {
+  PBuf icmp_packet;
+  icmp_packet->reserve_headers();
+  if (packet.has_value()) {
+    icmp_packet->insert(*packet.value(), 0);
+  }
+  ICMPDestinationUnreachableMessage dst_unreach;
+  icmp_packet->construct_tspt_hdr<ICMPHeader>(addr.version(), dst_unreach);
+  icmp_packet->unmask(dst_unreach.size());
+  auto ip_hdr = icmp_packet->construct_net_hdr<IPHeader>(addr.version()).value();
+  ip_hdr.proto() = IPProto::ICMP;
+  ip_hdr.dst_addr() = addr;
+  if (packet.has_value() && packet.value()->is_ip()) {
+    ip_hdr.src_addr() = IPAddr(packet.value()->ip().dst_addr());
+  }
+  output(std::move(icmp_packet));
+}
+
 void IPStack::setup_interface(Interface *iface) {
   using namespace std::placeholders;
   iface->neighbours.set_callbacks(
       std::bind(&IPStack::solicit_haddr, this, _1, _2, _3, _4),
-      [](IPAddr, Neighbour &) {});
+      [this](IPAddr addr, Neighbour & neigh) {
+      while (!neigh.queue.empty()) {
+        icmp_notify_unreachable(addr, neigh.queue.end());
+        neigh.queue.pop_back();
+      }
+    });
 }
 
 void IPStack::assign_ip(Interface *iface, IPAddr address) {

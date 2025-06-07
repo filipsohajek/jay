@@ -43,7 +43,7 @@ protected:
 };
 
 template <typename T>
-concept IsBufStruct = std::is_base_of_v<BufStruct<T>, T>;
+concept IsBufStruct = std::is_base_of_v<BufStruct<T, typename T::ErrorType>, T>;
 
 /// A structure field abstraction, providing transparent read and write access
 /// to a serializable ([IsBufReadable] and [IsBufWriteable], or [IsBufStruct])

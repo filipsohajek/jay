@@ -35,6 +35,7 @@ private:
   void ip_output_final(PBuf);
 
   void ip_deliver(PBuf);
+  void icmp_notify_unreachable(IPAddr, std::optional<PBuf> = std::nullopt);
 
   void icmp_input(PBuf, IPVersion);
   void solicit_haddr(Interface *iface, IPAddr tgt_iaddr,
@@ -47,11 +48,13 @@ private:
   };
   hash_table<IPAddr, AddrState> ips;
 
+  using ReassKey = std::tuple<IPAddr, IPAddr, uint32_t>;
   struct Reassembly {
     PBuf packet;
     std::unique_ptr<Timer> timer;
   };
-  hash_table<std::tuple<IPAddr, IPAddr, uint32_t>, Reassembly> reass_queue;
+  hash_table<ReassKey, Reassembly> reass_queue;
+  void reassemble_timeout(ReassKey, Reassembly&);
 
   IPRouter _router;
   Stack &stack;

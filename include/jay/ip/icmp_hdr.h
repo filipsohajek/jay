@@ -20,17 +20,18 @@ private:
         BufStruct<ICMPHeader>(cur) {}
 
 public:
-  STRUCT_FIELD(type, 0, uint8_t);
-  STRUCT_FIELD(code, 1, uint8_t);
   STRUCT_FIELD_LE(checksum, 2, uint16_t);
 
 private:
+  STRUCT_FIELD(type, 0, uint8_t);
+  STRUCT_FIELD(_code, 1, uint8_t);
   template <template <typename> typename Accessor> auto message_field() const {
-    return TaggedUnionField<decltype(type()), Accessor, ICMPEchoRequestMessage,
-                            ICMPEchoReplyMessage>{cur.span().subspan(4),
+    return TaggedUnionField<decltype(type()), Accessor, 
+                            ICMPEchoRequestMessage,
+                            ICMPEchoReplyMessage,
+                            ICMPTimeExceededMessage>{cur.span().subspan(4),
                                                   type()};
   }
-
 public:
   auto message() {
     if (std::holds_alternative<ICMPv4HeaderTag>(*this)) {
@@ -39,32 +40,32 @@ public:
     throw std::runtime_error("not implemented");
   }
 
+  ICMPCode code() const {
+    return {_code(), ver()};
+  }
+
   template <typename TMsg> static size_t size_hint(IPVersion, TMsg &) {
-    if constexpr (std::is_same_v<TMsg, ICMPEchoRequestMessage>)
-      return 8;
-    else if constexpr (std::is_same_v<TMsg, ICMPEchoReplyMessage>)
-      return 8;
-    else
-      return 4;
+    return 4 + TMsg::size_hint();
   }
 
   static Result<ICMPHeader, ICMPHeaderError> read(StructWriter cur, IPVersion) {
     return BufStruct<ICMPHeader>::read(cur);
   }
 
-  template <typename TMsg>
+  template <typename TMsg, typename TCode = uint8_t>
   static Result<ICMPHeader, ICMPHeaderError>
-  construct(StructWriter cur, IPVersion ver, TMsg &message) {
+  construct(StructWriter cur, IPVersion ver, TMsg &message, TCode code = 0) {
     ICMPHeader hdr(ver, cur);
     if (cur.size() < 4)
       return ResultError(ICMPHeaderError::OUT_OF_BOUNDS);
     cur.slice(0, 4).reset();
+    hdr._code() = ICMPCode(code, ver).code;
     if (ver == IPVersion::V4) {
       auto msg_res = hdr.message_field<ICMPv4TypeAccessor>().set<TMsg>();
       if (msg_res.has_value())
         message = msg_res.value();
       else
-        return ResultError(ICMPHeaderError::MESSAGE_ERROR);
+        return ResultError(msg_res.error());
     }
     return hdr;
   }
@@ -77,6 +78,7 @@ public:
   }
 
   bool is_v4() const { return std::holds_alternative<ICMPv4HeaderTag>(*this); }
+  IPVersion ver() const { return std::holds_alternative<ICMPv4HeaderTag>(*this) ? IPVersion::V4 : IPVersion::V4; }
 
   friend std::ostream &operator<<(std::ostream &os, ICMPHeader &addr) {
     os << "ICMP: version=" << (addr.is_v4() ? 4 : 6) << ", message=";
