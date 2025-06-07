@@ -172,10 +172,18 @@ void IPStack::ip_output_resolve(PBuf packet) {
   if (_router.route(packet).has_error())
     throw std::runtime_error("cannot route packet");
   if (!packet->nh_haddr.has_value()) {
-    auto resolved_packet = packet->iface->neighbours.resolve(std::move(packet));
-    if (!resolved_packet.has_value())
-      return;
-    packet = std::move(resolved_packet.value());
+    IPAddr dst_ip = packet->ip().dst_addr();
+    auto local_ip_it = ips.find(dst_ip);
+    if (local_ip_it != ips.end()) {
+      Interface* local_if = local_ip_it->second.iface;
+      packet->iface = local_if;
+      packet->local = true;
+    } else {
+      auto resolved_packet = packet->iface->neighbours.resolve(std::move(packet));
+      if (!resolved_packet.has_value())
+        return;
+      packet = std::move(resolved_packet.value());
+    }
   }
   uint16_t if_mtu = packet->iface->mtu();
 
@@ -246,11 +254,15 @@ void IPStack::ip_output_final(PBuf packet) {
     v4_hdr.hdr_csum() = inet_csum(v4_hdr.cursor().span());
   }
 
-  packet->construct_link_hdr<EthHeader>();
-  packet->eth().ether_type() =
-      packet->ip().is_v4() ? EtherType::IPV4 : EtherType(0);
-  packet->eth().dst_haddr() = packet->nh_haddr.value();
-  stack.output(std::move(packet));
+  if (packet->local) {
+    ip_input(std::move(packet), packet->nh_iaddr.value().version());
+  } else {
+    packet->construct_link_hdr<EthHeader>();
+    packet->eth().ether_type() =
+        packet->ip().is_v4() ? EtherType::IPV4 : EtherType(0);
+    packet->eth().dst_haddr() = packet->nh_haddr.value();
+    stack.output(std::move(packet));
+  }
 }
 
 void IPStack::output(PBuf packet) {

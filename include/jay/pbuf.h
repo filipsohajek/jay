@@ -56,6 +56,8 @@ public:
   Interface *iface = nullptr;
   std::optional<ip::IPAddr> nh_iaddr;
   std::optional<HWAddr> nh_haddr;
+
+  bool local = false;
   
   bool has_last_fragment = false;
 

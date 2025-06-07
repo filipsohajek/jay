@@ -29,6 +29,10 @@ struct IPv4Addr : public std::array<uint8_t, 4> {
     os << std::format("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3]);
     return os;
   }
+
+  bool is_local() const {
+    return (*this)[0] == 127;
+  }
 };
 
 struct IPAddr : public std::variant<IPv4Addr> {
@@ -46,11 +50,15 @@ struct IPAddr : public std::variant<IPv4Addr> {
     return os;
   }
 
-  bool is_any() {
+  bool is_any() const {
     if (std::holds_alternative<IPv4Addr>(*this)) {
       return std::get<IPv4Addr>(*this) == IPv4Addr::any(); 
     }
     return false;
+  }
+
+  bool is_local() const {
+    return std::visit([](const auto& addr) { return addr.is_local(); }, *this);
   }
   
   uint32_t csum() const {

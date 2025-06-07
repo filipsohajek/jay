@@ -35,6 +35,10 @@ public:
   
   Result<Destination*, Error> route(PBuf& packet) {
     IPAddr dst_addr = packet->ip().dst_addr();
+    if (dst_addr.is_local()) {
+      packet->nh_iaddr = packet->ip().dst_addr();
+      return nullptr;
+    }
     auto rt_result = route(dst_addr);
     if (rt_result.has_error())
       return rt_result;
