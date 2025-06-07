@@ -23,7 +23,7 @@ public:
   void output(PBuf);
 
   void setup_interface(Interface *);
-  void assign_ip(Interface *, IPAddr);
+  void assign_ip(Interface *, IPAddr, uint8_t prefix_len);
 
   void poll();
   IPRouter &router() { return _router; }
@@ -44,9 +44,10 @@ private:
   void reassemble_single(PBuf, IPFragData);
 
   struct AddrState {
-    Interface *iface;
+    uint8_t prefix_len = 0;
+    Interface *iface = nullptr;
   };
-  hash_table<IPAddr, AddrState> ips;
+  BitTrie<IPv4Addr, AddrState> ips;
 
   using ReassKey = std::tuple<IPAddr, IPAddr, uint32_t>;
   struct Reassembly {

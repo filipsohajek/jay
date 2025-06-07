@@ -112,7 +112,7 @@ int main() {
   auto tap = std::make_shared<TAPInterface>("tap0", jay::HWAddr {0x02, 0xa0, 0x04, 0xd3, 0x00, 0x11}, 1500);
   stack.add_interface(tap);
   stack.ip.router().add_route(jay::ip::IPv4Addr {10, 0, 0, 0}, 24, tap.get(), std::nullopt, jay::ip::IPv4Addr {10, 0, 0, 2});
-  stack.ip.assign_ip(tap.get(), jay::ip::IPv4Addr {10, 0, 0, 2});
+  stack.ip.assign_ip(tap.get(), jay::ip::IPv4Addr {10, 0, 0, 2}, 24);
 
   jay::Buf payload(10000);
   auto payload_span = payload.begin().contiguous();

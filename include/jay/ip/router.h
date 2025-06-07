@@ -25,7 +25,7 @@ public:
       return &dst_cache[dst_addr];
 
     Destination& dst = dst_cache[dst_addr];
-    auto [match_prefix, match_route] = rt_table.match_longest(dst_addr.v4(), 32);
+    auto [match_prefix, match_route, _match_len] = rt_table.match_longest(dst_addr.v4(), 32);
     if (match_route == nullptr)
       return ResultError(Error::NO_ROUTE);
     dst.route = *match_route;

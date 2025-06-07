@@ -44,7 +44,7 @@ public:
     return {_code(), ver()};
   }
 
-  template <typename TMsg> static size_t size_hint(IPVersion, TMsg &) {
+  template <typename TMsg, typename TCode = uint8_t> static size_t size_hint(IPVersion, TMsg &, TCode = 0) {
     return 4 + TMsg::size_hint();
   }
 

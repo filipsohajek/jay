@@ -126,6 +126,7 @@ public:
     }
   };
 private:
+  static const size_t KEY_FULL_SIZE = 8 * sizeof(TKey) * sizeof(RemoveExtent_t<TKey>);
   struct EndSentinel {};
 
   struct InorderIterator {
@@ -235,7 +236,7 @@ public:
     size_t search_offset;
   };
 
-  MatchIterator match_begin(TKey key, size_t key_len) {
+  MatchIterator match_begin(TKey key, size_t key_len = KEY_FULL_SIZE) {
     return {root.get(), {key, key_len}};
   }
 
@@ -252,31 +253,31 @@ public:
     return *new_node->value;
   }
 
-  bool contains(TKey key, size_t key_len) {
+  bool contains(TKey key, size_t key_len = KEY_FULL_SIZE) {
     auto it = match_begin(key, key_len);
     for (; it != match_end(); it++) {
     }
     return it.is_full_match();
   }
 
-  TVal &at(TKey key, size_t key_len) {
+  TVal &at(TKey key, size_t key_len = KEY_FULL_SIZE) {
     auto it = match_begin(key, key_len);
     for (; it != match_end(); it++) {
     }
     if (it.is_full_match()) {
-      return (*it).value;
+      return *(*it).value;
     } else {
-      return (*it).split({key, key_len}, it.search_offset)->value;
+      return *(*it).split({key, key_len}, it.search_offset)->value;
     }
   }
 
-  std::pair<TKey, TVal*> match_longest(TKey key, size_t key_len) {
+  std::tuple<TKey, TVal*, size_t> match_longest(TKey key, size_t key_len = KEY_FULL_SIZE) {
     auto it = match_begin(key, key_len);
     for (; it != match_end(); it++) {}
-    return std::make_pair((*it).key.value, (*it).value.get());
+    return std::make_tuple((*it).key.value, (*it).value.get(), it.search_offset);
   }
 
-  void erase(TKey key, size_t key_len) {
+  void erase(TKey key, size_t key_len = KEY_FULL_SIZE) {
     auto it = match_begin(key, key_len);
     auto prev_prev_it = it;
     for (auto prev_it = it; it != match_end(); prev_prev_it = prev_it, prev_it = it++) {

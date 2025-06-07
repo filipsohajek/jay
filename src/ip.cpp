@@ -3,8 +3,8 @@
 #include "jay/ip/stack.h"
 #include "jay/pbuf.h"
 #include "jay/stack.h"
+#include <iostream>
 #include <random>
-#include <ranges>
 
 namespace jay::ip {
 void IPStack::ip_input(PBuf packet, IPVersion version) {
@@ -12,15 +12,27 @@ void IPStack::ip_input(PBuf packet, IPVersion version) {
     return;
   auto ip_hdr = packet->ip();
   IPAddr dst_addr = ip_hdr.dst_addr();
-  if (!ips.contains(dst_addr) && !dst_addr.is_broadcast()) {
-    packet->forwarded = true;
-    if (packet->ip().ttl() == 0) {
-      output(PBuf::icmp_for<ICMPTimeExceededMessage>(
-        packet->ip().src_addr(), nullptr, TimeExceededType::HOP_LIMIT, &packet->buf()));
+
+  auto [local_ip, local_ip_state, match_len] = ips.match_longest(dst_addr.v4());
+  if (match_len != 32) {
+    bool broadcast = false;
+    if (local_ip_state && (match_len >= local_ip_state->prefix_len)) {
+      auto dst_bits = AsBits{dst_addr.v4(), 32};
+      broadcast =
+          std::ranges::all_of(dst_bits.begin() + local_ip_state->prefix_len,
+                              dst_bits.end(), [](bool b) { return b; });
+    }
+    if (!broadcast && !dst_addr.is_multicast()) {
+      packet->forwarded = true;
+      if (packet->ip().ttl() == 0) {
+        output(PBuf::icmp_for<ICMPTimeExceededMessage>(
+            packet->ip().src_addr(), nullptr, TimeExceededType::HOP_LIMIT,
+            &packet->buf()));
+        return;
+      }
+      output(std::move(packet));
       return;
     }
-    output(std::move(packet));
-    return;
   }
   if (ip_hdr.is_v4()) {
     IPFragData frag_data = ip_hdr.v4().frag_data().read().value();
@@ -129,11 +141,11 @@ void IPStack::arp_input(PBuf packet) {
   auto arp_hdr = packet->arp();
 
   if (arp_hdr.op() == ARPOp::REQUEST) {
-    auto tgt_ip_iter = ips.find(arp_hdr.tgt_iaddr());
-    if (tgt_ip_iter == ips.end())
+    auto [tgt_ip, tgt_ip_state, match_len] =
+        ips.match_longest(arp_hdr.tgt_iaddr());
+    if (match_len != 32)
       return;
-    auto &[tgt_ip, tgt_ip_state] = *tgt_ip_iter;
-    if (packet->iface != tgt_ip_state.iface)
+    if (packet->iface != tgt_ip_state->iface)
       return;
 
     PBuf reply_packet;
@@ -143,7 +155,7 @@ void IPStack::arp_input(PBuf packet) {
         reply_packet->construct_net_hdr<ARPHeader>().value();
     reply_arp_hdr.op() = ARPOp::REPLY;
     reply_arp_hdr.sdr_haddr() = packet->iface->addr();
-    reply_arp_hdr.sdr_iaddr() = tgt_ip.v4();
+    reply_arp_hdr.sdr_iaddr() = tgt_ip;
     reply_arp_hdr.tgt_haddr() = HWAddr(arp_hdr.sdr_haddr());
     reply_arp_hdr.tgt_iaddr() = IPv4Addr(arp_hdr.sdr_iaddr());
     reply_packet->unmask(reply_arp_hdr.size());
@@ -182,13 +194,15 @@ void IPStack::ip_output_resolve(PBuf packet) {
     throw std::runtime_error("cannot route packet");
   if (!packet->nh_haddr.has_value()) {
     IPAddr dst_ip = packet->ip().dst_addr();
-    auto local_ip_it = ips.find(dst_ip);
-    if (local_ip_it != ips.end()) {
-      Interface* local_if = local_ip_it->second.iface;
+    auto [local_ip, local_ip_state, local_ip_match] =
+        ips.match_longest(dst_ip.v4());
+    if (local_ip_match == 32) {
+      Interface *local_if = local_ip_state->iface;
       packet->iface = local_if;
       packet->local = true;
     } else {
-      auto resolved_packet = packet->iface->neighbours.resolve(std::move(packet));
+      auto resolved_packet =
+          packet->iface->neighbours.resolve(std::move(packet));
       if (!resolved_packet.has_value())
         return;
       packet = std::move(resolved_packet.value());
@@ -198,8 +212,10 @@ void IPStack::ip_output_resolve(PBuf packet) {
 
   if (packet->size() > if_mtu) {
     if (packet->ip().is_v4()) {
-      if (packet->ip().v4().frag_data().value().dont_frag()) {
-        icmp_notify_unreachable(packet->ip().src_addr(), UnreachableReason::PACKET_TOO_BIG, std::move(packet));
+      if (packet->ip().v4().frag_data().read().value().dont_frag()) {
+        icmp_notify_unreachable(packet->ip().src_addr(),
+                                UnreachableReason::PACKET_TOO_BIG,
+                                std::move(packet));
         return;
       }
     }
@@ -215,7 +231,7 @@ void IPStack::ip_output_fragment(PBuf packet, size_t if_mtu) {
   size_t frag_offset = 0;
   bool last_before = true;
   if (packet->forwarded) {
-    IPFragData frag_data = packet->ip().v4().frag_data().value();
+    IPFragData frag_data = packet->ip().v4().frag_data().read().value();
     ident = frag_data.identification();
     last_before = !frag_data.more_frags();
     frag_offset = frag_data.frag_offset();
@@ -302,7 +318,7 @@ void IPStack::solicit_haddr(Interface *iface, IPAddr tgt_iaddr,
                             std::optional<IPAddr> siaddr_hint) {
   IPAddr sdr_iaddr;
   if (siaddr_hint.has_value() &&
-      ips.contains(siaddr_hint.value())) // TODO: verify iface?
+      ips.contains(siaddr_hint.value().v4())) // TODO: verify iface?
     sdr_iaddr = siaddr_hint.value();
   else
     throw std::invalid_argument("source address selection not implemented");
@@ -341,15 +357,17 @@ void IPStack::setup_interface(Interface *iface) {
       std::bind(&IPStack::solicit_haddr, this, _1, _2, _3, _4),
       [this](IPAddr addr, Neighbour &neigh) {
         while (!neigh.queue.empty()) {
-          icmp_notify_unreachable(addr, UnreachableReason::HOST_UNREACHABLE, std::move(neigh.queue.back()));
+          icmp_notify_unreachable(addr, UnreachableReason::HOST_UNREACHABLE,
+                                  std::move(neigh.queue.back()));
           neigh.queue.pop_back();
         }
       });
 }
 
-void IPStack::assign_ip(Interface *iface, IPAddr address) {
-  auto &addr_state = ips[address];
+void IPStack::assign_ip(Interface *iface, IPAddr address, uint8_t prefix_len) {
+  AddrState& addr_state = ips.at(address.v4());
   addr_state.iface = iface;
+  addr_state.prefix_len = prefix_len;
 }
 
 void IPStack::poll() {

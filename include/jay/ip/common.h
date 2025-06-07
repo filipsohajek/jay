@@ -37,6 +37,10 @@ struct IPv4Addr : public std::array<uint8_t, 4> {
   bool is_broadcast() const {
     return ((*this)[0] == 255) && ((*this)[1] == 255) && ((*this)[2] == 255) && ((*this)[3] == 255);
   }
+
+  bool is_multicast() const {
+    return ((*this)[0] & 0xe0) == 0xe0;
+  }
 };
 
 struct IPAddr : public std::variant<IPv4Addr> {
@@ -67,6 +71,10 @@ struct IPAddr : public std::variant<IPv4Addr> {
 
   bool is_broadcast() const {
     return std::visit([](const auto& addr) { return addr.is_broadcast(); }, *this);
+  }
+  
+  bool is_multicast() const {
+    return std::visit([](const auto& addr) { return addr.is_multicast(); }, *this);
   }
   
   uint32_t csum() const {
