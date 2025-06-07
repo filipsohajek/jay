@@ -35,7 +35,7 @@ private:
   void ip_output_final(PBuf);
 
   void ip_deliver(PBuf);
-  void icmp_notify_unreachable(IPAddr, std::optional<PBuf> = std::nullopt);
+  void icmp_notify_unreachable(IPAddr, UnreachableReason, std::optional<PBuf> = std::nullopt);
 
   void icmp_input(PBuf, IPVersion);
   void solicit_haddr(Interface *iface, IPAddr tgt_iaddr,

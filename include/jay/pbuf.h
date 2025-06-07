@@ -109,7 +109,7 @@ public:
   ip::ARPHeader arp() { return std::get<ip::ARPHeader>(net_hdr); }
   ip::ICMPHeader icmp() { return std::get<ip::ICMPHeader>(tspt_hdr); }
   udp::UDPHeader udp() { return std::get<udp::UDPHeader>(tspt_hdr); }
-  
+
   friend std::ostream &operator<<(std::ostream &os, PBufStruct &addr) {
     os << "Packet (unmasked size=" << addr.size() << ")\n";
     os << "Link: ";
@@ -143,6 +143,28 @@ public:
   PBuf() : std::unique_ptr<PBufStruct>(std::make_unique<PBufStruct>()) {};
   template<typename ...T>
   PBuf(T&&... args) : std::unique_ptr<PBufStruct>(std::make_unique<PBufStruct>(std::forward<T>(args)...)) {}
+  
+  template<typename TMsg, typename TCode = uint8_t>
+  static PBuf icmp_for(ip::IPAddr dst_addr, TMsg* msg = nullptr, TCode code = 0, Buf* payload = nullptr, std::optional<ip::IPAddr> src_addr = std::nullopt) {
+    PBuf packet;
+    packet->reserve_headers();
+    if (payload) {
+      packet->buf().insert(*payload, 0);
+    }
+
+    TMsg tmp_msg;
+    packet->construct_tspt_hdr<ip::ICMPHeader>(dst_addr.version(), msg ? *msg : tmp_msg, code);
+    TMsg* res_msg = msg ? msg : &tmp_msg;
+    packet->unmask(res_msg->size());
+
+    auto ip_hdr = packet->construct_net_hdr<ip::IPHeader>(dst_addr.version()).value();
+    ip_hdr.proto() = ip::IPProto::ICMP;
+    ip_hdr.dst_addr() = dst_addr;
+    if (src_addr.has_value())
+      ip_hdr.src_addr() = src_addr.value();
+    
+    return packet;
+  }
 };
 
 } // namespace jay
