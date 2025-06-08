@@ -3,6 +3,7 @@
 #include "jay/buf/struct.h"
 #include "jay/ip/arp.h"
 #include "jay/ip/icmp_hdr.h"
+#include "jay/ip/igmp.h"
 #include "jay/ip/ip_hdr.h"
 #include "jay/ip/v4.h"
 #include "jay/udp/udp_hdr.h"
@@ -63,7 +64,7 @@ public:
   bool has_last_fragment = false;
 
   std::variant<NoHdr, EthHeader> link_hdr;
-  std::variant<NoHdr, ip::ARPHeader, ip::IPHeader> net_hdr;
+  std::variant<NoHdr, ip::ARPHeader, ip::IPHeader, ip::IGMPHeader> net_hdr;
   std::variant<NoHdr, ip::ICMPHeader, udp::UDPHeader> tspt_hdr;
   
   PBufStruct(size_t payload_size) : Buf(payload_size + 128) {
@@ -104,12 +105,14 @@ public:
   
   bool is_ip() { return std::holds_alternative<ip::IPHeader>(net_hdr); }
   bool is_arp() { return std::holds_alternative<ip::ARPHeader>(net_hdr); }
+  bool is_igmp() { return std::holds_alternative<ip::IGMPHeader>(net_hdr); }
   bool is_icmp() { return std::holds_alternative<ip::ICMPHeader>(tspt_hdr); }
   bool is_udp() { return std::holds_alternative<udp::UDPHeader>(tspt_hdr); }
 
   EthHeader eth() { return std::get<EthHeader>(link_hdr); }
   ip::IPHeader ip() { return std::get<ip::IPHeader>(net_hdr); }
   ip::ARPHeader arp() { return std::get<ip::ARPHeader>(net_hdr); }
+  ip::IGMPHeader igmp() { return std::get<ip::IGMPHeader>(net_hdr); }
   ip::ICMPHeader icmp() { return std::get<ip::ICMPHeader>(tspt_hdr); }
   udp::UDPHeader udp() { return std::get<udp::UDPHeader>(tspt_hdr); }
 

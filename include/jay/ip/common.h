@@ -1,6 +1,7 @@
 #pragma once
 
 #include "jay/buf/sbuf.h"
+#include "jay/eth.h"
 #include <array>
 #include <cstdint>
 #include <numeric>
@@ -8,7 +9,7 @@
 #include <format>
 
 namespace jay::ip {
-enum class IPProto : uint8_t { ICMP = 0x1, UDP = 0x11 };
+enum class IPProto : uint8_t { ICMP = 0x1, IGMP = 0x2, UDP = 0x11 };
 
 enum IPVersion {
   V4 = 4,
@@ -40,6 +41,10 @@ struct IPv4Addr : public std::array<uint8_t, 4> {
 
   bool is_multicast() const {
     return ((*this)[0] & 0xe0) == 0xe0;
+  }
+
+  HWAddr multicast_haddr() const {
+    return {0x01, 0x00, 0x5e, static_cast<uint8_t>((*this)[1] & 0x7f), (*this)[2], (*this)[3]};
   }
 };
 
@@ -75,6 +80,10 @@ struct IPAddr : public std::variant<IPv4Addr> {
   
   bool is_multicast() const {
     return std::visit([](const auto& addr) { return addr.is_multicast(); }, *this);
+  }
+
+  HWAddr multicast_haddr() const {
+    return std::visit([](const auto& addr) { return addr.multicast_haddr(); }, *this);
   }
   
   uint32_t csum() const {

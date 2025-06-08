@@ -19,7 +19,7 @@ public:
   clock::duration reassembly_timeout = std::chrono::seconds{10};
   explicit IPStack(Stack &stack)
       : stack(stack), _sock_table(std::bind(&IPStack::select_src_addr, this,
-                                            std::placeholders::_1)) {}
+                                            std::placeholders::_1, nullptr)) {}
   void ip_input(PBuf, IPVersion);
   void arp_input(PBuf);
   void output(PBuf);
@@ -33,6 +33,8 @@ public:
   udp::UDPSocket udp_sock() {
     return {*this};
   }
+  void mcast_join(Interface*, IPAddr);
+  void mcast_leave(Interface*, IPAddr);
 private:
   void arp_output(PBuf);
   void ip_output_resolve(PBuf);
@@ -41,18 +43,28 @@ private:
 
   void ip_deliver(PBuf);
   void udp_deliver(PBuf);
+  void igmp_deliver(PBuf);
   void icmp_notify_unreachable(IPAddr, UnreachableReason,
                                std::optional<PBuf> = std::nullopt);
 
-  IPAddr select_src_addr(std::optional<IPAddr> daddr_hint);
+
+  void igmp_send_report(IGMPMessageType, Interface*, IPv4Addr);
+
+  IPAddr select_src_addr(std::optional<IPAddr> daddr_hint, Interface* iface = nullptr);
+
   void icmp_input(PBuf, IPVersion);
   void solicit_haddr(Interface *iface, IPAddr tgt_iaddr,
                      std::optional<HWAddr> thaddr_hint,
                      std::optional<IPAddr> siaddr_hint);
   void reassemble_single(PBuf, IPFragData);
 
+  enum AddrScope {
+    LINK,
+    GLOBAL
+  };
   struct AddrState {
     uint8_t prefix_len = 0;
+    AddrScope scope;
     Interface *iface = nullptr;
   };
   BitTrie<IPv4Addr, AddrState> ips;
@@ -67,7 +79,9 @@ private:
 
   IPRouter _router;
   Stack &stack;
-
   SocketTable _sock_table;
+
+  std::unordered_set<std::tuple<Interface*, IPAddr>> mcast_groups;
+  std::unordered_set<std::unique_ptr<Timer>> mcast_resp_timers;
 };
 } // namespace jay::ip

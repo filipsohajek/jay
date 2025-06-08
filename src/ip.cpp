@@ -1,4 +1,5 @@
 #include "jay/if.h"
+#include "jay/ip/igmp.h"
 #include "jay/ip/sock.h"
 #include "jay/ip/stack.h"
 #include "jay/pbuf.h"
@@ -56,11 +57,40 @@ void IPStack::ip_deliver(PBuf packet) {
   case IPProto::UDP:
     udp_deliver(std::move(packet));
     break;
+  case IPProto::IGMP:
+    igmp_deliver(std::move(packet));
+    break;
   default:
     return;
   }
 }
 
+void IPStack::igmp_deliver(PBuf packet) {
+  if (!packet->ip().is_v4())
+    return;
+  IPv4Addr group_addr = IPAddr(packet->ip().dst_addr()).v4();
+  if (!group_addr.is_multicast())
+    return;
+
+  if (packet->construct_net_hdr<IGMPHeader>().has_error())
+    return;
+  auto igmp_header = packet->igmp();
+  if (igmp_header.type() == IGMPMessageType::MEMBER_QUERY) {
+    if (mcast_groups.contains({packet->iface, group_addr})) {
+      uint16_t max_resp_ms = igmp_header.max_resp_time() * 100;
+      std::mt19937 mt;
+      std::uniform_int_distribution<uint16_t> dur_unif(0, max_resp_ms);
+      Interface* iface = packet->iface;
+      auto resp_timer = timers.create(std::chrono::milliseconds {dur_unif(mt)}, [this, iface, group_addr](Timer* timer) {
+        std::unique_ptr<Timer> search_ptr(timer);
+        mcast_resp_timers.erase(search_ptr);
+        igmp_send_report(IGMPMessageType::V2_MEMBER_REPORT, iface, group_addr);
+        search_ptr.release();
+      });
+      mcast_resp_timers.insert(std::move(resp_timer));
+    }
+  }
+}
 
 void IPStack::udp_deliver(PBuf packet) {
   if (packet->read_tspt_hdr<udp::UDPHeader>().has_error())
@@ -208,6 +238,8 @@ void IPStack::ip_output_resolve(PBuf packet) {
       Interface *local_if = local_ip_state->iface;
       packet->iface = local_if;
       packet->local = true;
+    } else if (dst_ip.is_multicast()) {
+      packet->nh_haddr = dst_ip.multicast_haddr();
     } else {
       auto resolved_packet =
           packet->iface->neighbours.resolve(std::move(packet));
@@ -293,7 +325,11 @@ void IPStack::ip_output_final(PBuf packet) {
       },
       packet->tspt_hdr);
 
-  packet->ip().ttl() = packet->forwarded ? (packet->ip().ttl() - 1) : 128;
+  if (packet->ip().ttl() == 0)
+    packet->ip().ttl() = 128;
+  else if (packet->forwarded)
+    packet->ip().ttl() = packet->ip().ttl() - 1;
+
   packet->unmask(packet->ip().size());
   if (packet->ip().is_v4()) {
     auto v4_hdr = packet->ip().v4();
@@ -372,15 +408,22 @@ void IPStack::setup_interface(Interface *iface) {
       });
 }
 
-IPAddr IPStack::select_src_addr(std::optional<IPAddr> daddr_hint) {
-  const IPRouter::Route *rt = _router.default_route();
-  if (daddr_hint.has_value()) {
-    auto route_res = _router.route(daddr_hint.value());
-    if (route_res.has_value())
-      rt = &route_res.value()->route;
+IPAddr IPStack::select_src_addr(std::optional<IPAddr> daddr_hint,
+                                Interface *iface) {
+  if (!iface) {
+    const IPRouter::Route *rt = _router.default_route();
+    if (daddr_hint.has_value()) {
+      auto route_res = _router.route(daddr_hint.value());
+      if (route_res.has_value())
+        rt = &route_res.value()->route;
+    }
+
+    if (rt && rt->iface)
+      iface = rt->iface;
   }
 
-  auto [src_ip, src_state] = std::ranges::max(ips, [&](const auto &left, const auto &right) {
+  auto [src_ip, src_state] = std::ranges::max(ips, [&](const auto &left,
+                                                       const auto &right) {
     auto [left_ip, left_state] = left;
     auto [right_ip, right_state] = right;
 
@@ -391,10 +434,10 @@ IPAddr IPStack::select_src_addr(std::optional<IPAddr> daddr_hint) {
         return true;
     }
 
-    if (rt) {
-      if (left_state->iface == rt->iface)
+    if (iface) {
+      if (left_state->iface == iface)
         return false;
-      if (right_state->iface == rt->iface)
+      if (right_state->iface == iface)
         return true;
     }
 
@@ -413,6 +456,46 @@ IPAddr IPStack::select_src_addr(std::optional<IPAddr> daddr_hint) {
   });
 
   return src_ip;
+}
+
+void IPStack::mcast_join(Interface *iface, IPAddr group_addr) {
+  mcast_groups.emplace(iface, group_addr);
+  if (group_addr.is_v4()) {
+    igmp_send_report(IGMPMessageType::V2_MEMBER_REPORT, iface, group_addr.v4());
+  }
+}
+
+void IPStack::mcast_leave(Interface *iface, IPAddr group_addr) {
+  mcast_groups.erase({iface, group_addr});
+  if (group_addr.is_v4()) {
+    igmp_send_report(IGMPMessageType::LEAVE_GROUP, iface, group_addr.v4());
+  }
+}
+
+void IPStack::igmp_send_report(IGMPMessageType msg_type, Interface *iface, IPv4Addr group_addr) {
+  PBuf report_packet;
+  report_packet->iface = iface;
+  report_packet->reserve_headers();
+  auto igmp_hdr = report_packet->construct_net_hdr<IGMPHeader>().value();
+  igmp_hdr.type() = msg_type;
+  igmp_hdr.group_addr() = group_addr;
+  report_packet->unmask(igmp_hdr.size());
+  igmp_hdr.checksum() = inet_csum(report_packet->buf());
+  IPRAOption ra_opt;
+  auto ip_hdr = report_packet->construct_net_hdr<IPHeader>(IPVersion::V4, ra_opt).value();
+  ip_hdr.proto() = IPProto::IGMP;
+
+  switch (msg_type) {
+    case IGMPMessageType::LEAVE_GROUP:
+      ip_hdr.dst_addr() = IPv4Addr {224, 0, 0, 2};
+      break;     
+    default:
+      ip_hdr.dst_addr() = group_addr;
+      break;
+  }
+  ip_hdr.src_addr() = select_src_addr(group_addr, iface);
+  ip_hdr.ttl() = 1;
+  output(std::move(report_packet));
 }
 
 void IPStack::assign_ip(Interface *iface, IPAddr address, uint8_t prefix_len) {

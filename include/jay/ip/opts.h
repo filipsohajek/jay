@@ -14,5 +14,9 @@ struct IPFragData : public std::variant<IPv4FragData>, JointStruct {
 struct IPRAOption : public std::variant<IPv4RAOption>, JointStruct {
   using std::variant<IPv4RAOption>::variant;
   JOINT_FIELD(value, uint16_t);
+
+  size_t size() const {
+    return 2;
+  }
 };
 }

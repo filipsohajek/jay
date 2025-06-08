@@ -20,7 +20,7 @@ struct IPv4FragData : public BufStruct<IPv4FragData> {
 
 struct IPv4RAOption : public BufStruct<IPv4RAOption> {
   using BufStruct::BufStruct;
-  static const uint8_t UNION_TAG = 0x94;
+  static const uint8_t UNION_TAG = 0x14;
   IPv4RAOption() : BufStruct<IPv4RAOption>(StructWriter({})) {}
 
   STRUCT_FIELD(value, 0, uint16_t);
@@ -39,11 +39,18 @@ struct IPv4UnknownOption : public BufStruct<IPv4UnknownOption> {
 
 struct IPv4Option : public BufStruct<IPv4Option> {
   using BufStruct::BufStruct;
-  STRUCT_BITFIELD(copied, 1, 1, bool);
+  STRUCT_BITFIELD(copied, 0, 1, bool);
   STRUCT_BITFIELD(type, 3, 5, uint8_t);
   STRUCT_FIELD(length, 1, uint8_t);
   STRUCT_TAGGED_UNION(option, 2, type(), IPv4RAOption);
   
+  static Result<IPv4Option, BufError> construct(StructWriter cur) { 
+    auto strct = IPv4Option {cur};
+    if (2 > cur.size())
+      return ResultError<BufError>{BufError::OUT_OF_BOUNDS};
+    return strct;
+  }
+
   size_t size() const {
     return 2 + length();
   }
@@ -103,7 +110,9 @@ public:
         arg = hdr.frag_data().construct().value();
       } else if constexpr (std::is_same_v<decltype(arg), IPRAOption&>) {
         IPv4Option first_opt = (*hdr.options().begin()).construct().value();
-        arg = first_opt.option().set<IPv4RAOption>();
+        arg = first_opt.option().set<IPv4RAOption>().value();
+        first_opt.length() = 2 + arg.size();
+        first_opt.copied() = true;
       } else if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, IPHeader>) {
         if (!arg.is_v4()) {
           error = IPHeaderError::BAD_VERSION;

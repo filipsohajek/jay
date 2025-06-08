@@ -114,12 +114,16 @@ int main() {
   stack.ip.router().add_route(jay::ip::IPv4Addr {10, 0, 0, 0}, 24, tap.get(), std::nullopt, jay::ip::IPv4Addr {10, 0, 0, 2});
   stack.ip.assign_ip(tap.get(), jay::ip::IPv4Addr {10, 0, 0, 2}, 24);
 
+
+  stack.ip.mcast_join(tap.get(), jay::ip::IPv4Addr {224, 0, 0, 3});
+
   jay::Buf payload(10000);
   auto payload_span = payload.begin().contiguous();
   uint8_t ctr = 0;
   for (auto it = payload_span.subspan(6).begin(); it < payload_span.end(); it++, ctr++) {
     *it = ctr;
   }
+  stack.ip.mcast_leave(tap.get(), jay::ip::IPv4Addr {224, 0, 0, 3});
 
   auto udp_sock = stack.ip.udp_sock();
   udp_sock.listen(std::nullopt, 12345);

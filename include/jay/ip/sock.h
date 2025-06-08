@@ -4,6 +4,7 @@
 #include "jay/util/hashtable.h"
 #include <functional>
 #include <random>
+#include <unordered_set>
 
 namespace jay::ip {
 class IPStack;

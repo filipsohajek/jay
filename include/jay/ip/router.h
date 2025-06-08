@@ -39,7 +39,7 @@ public:
   
   Result<Destination*, Error> route(PBuf& packet) {
     IPAddr dst_addr = packet->ip().dst_addr();
-    if (dst_addr.is_local()) {
+    if (dst_addr.is_local() || dst_addr.is_multicast()) {
       packet->nh_iaddr = packet->ip().dst_addr();
       return nullptr;
     }
