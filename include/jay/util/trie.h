@@ -299,6 +299,10 @@ public:
     }
   }
 
+  TVal* tree_root() {
+    return root->value.get();
+  }
+
   InorderIterator begin() {
     return {root.get()};
   }

@@ -121,8 +121,9 @@ int main() {
     *it = ctr;
   }
 
-  auto udp_sock = stack.ip.udp().listen(std::nullopt, 12345);
-  udp_sock->on_data_fn = [](jay::udp::UDPSocket& sock, const jay::Buf& buf, jay::ip::IPAddr addr, uint16_t remote_port) {
+  auto udp_sock = stack.ip.udp_sock();
+  udp_sock.listen(std::nullopt, 12345);
+  udp_sock.on_data_fn = [](jay::udp::UDPSocket& sock, const jay::Buf& buf, jay::ip::IPAddr addr, uint16_t remote_port) {
     std::cout << "socked received " << buf.size() << " bytes from " << addr << ":" << remote_port << "\n";
     sock.send(buf, addr, remote_port);
   };

@@ -7,7 +7,7 @@ namespace jay::ip {
 class IPRouter {
 public:
   struct Route {
-    Interface* iface;
+    Interface* iface = nullptr;
     std::optional<IPAddr> nh_iaddr;
     std::optional<IPAddr> src_iaddr;
   };
@@ -31,6 +31,10 @@ public:
     dst.route = *match_route;
 
     return &dst;
+  }
+
+  Route* default_route() {
+    return rt_table.tree_root();
   }
   
   Result<Destination*, Error> route(PBuf& packet) {

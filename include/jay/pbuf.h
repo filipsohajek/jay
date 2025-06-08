@@ -156,9 +156,8 @@ public:
     }
 
     TMsg tmp_msg;
-    packet->construct_tspt_hdr<ip::ICMPHeader>(dst_addr.version(), msg ? *msg : tmp_msg, code);
-    TMsg* res_msg = msg ? msg : &tmp_msg;
-    packet->unmask(res_msg->size());
+    auto icmp_hdr = packet->construct_tspt_hdr<ip::ICMPHeader>(dst_addr.version(), msg ? *msg : tmp_msg, code).value();
+    packet->unmask(icmp_hdr.size());
 
     auto ip_hdr = packet->construct_net_hdr<ip::IPHeader>(dst_addr.version()).value();
     ip_hdr.proto() = ip::IPProto::ICMP;

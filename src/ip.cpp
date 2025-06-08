@@ -54,11 +54,18 @@ void IPStack::ip_deliver(PBuf packet) {
     icmp_input(std::move(packet), IPVersion::V4);
     break;
   case IPProto::UDP:
-    _udp.deliver(std::move(packet));
+    udp_deliver(std::move(packet));
     break;
   default:
     return;
   }
+}
+
+
+void IPStack::udp_deliver(PBuf packet) {
+  if (packet->read_tspt_hdr<udp::UDPHeader>().has_error())
+    return;
+  _sock_table.deliver(std::move(packet));
 }
 
 void IPStack::icmp_input(PBuf packet, IPVersion version) {
@@ -70,6 +77,7 @@ void IPStack::icmp_input(PBuf packet, IPVersion version) {
   packet->unmask(icmp_hdr.size());
   if (inet_csum(*packet) != 0x0000)
     return;
+  packet->mask(icmp_hdr.size());
 
   std::visit(
       [&](auto msg) {
@@ -364,8 +372,51 @@ void IPStack::setup_interface(Interface *iface) {
       });
 }
 
+IPAddr IPStack::select_src_addr(std::optional<IPAddr> daddr_hint) {
+  const IPRouter::Route *rt = _router.default_route();
+  if (daddr_hint.has_value()) {
+    auto route_res = _router.route(daddr_hint.value());
+    if (route_res.has_value())
+      rt = &route_res.value()->route;
+  }
+
+  auto [src_ip, src_state] = std::ranges::max(ips, [&](const auto &left, const auto &right) {
+    auto [left_ip, left_state] = left;
+    auto [right_ip, right_state] = right;
+
+    if (daddr_hint.has_value()) {
+      if (left_ip == daddr_hint.value().v4())
+        return false;
+      if (right_ip == daddr_hint.value().v4())
+        return true;
+    }
+
+    if (rt) {
+      if (left_state->iface == rt->iface)
+        return false;
+      if (right_state->iface == rt->iface)
+        return true;
+    }
+
+    if (daddr_hint.has_value()) {
+      auto left_bits = AsBits{left_ip, 32};
+      auto right_bits = AsBits{right_ip, 32};
+      auto daddr_bits = AsBits{daddr_hint.value().v4(), 32};
+
+      return std::distance(left_bits.begin(),
+                           std::ranges::mismatch(left_bits, daddr_bits).in1) <
+             std::distance(right_bits.begin(),
+                           std::ranges::mismatch(right_bits, daddr_bits).in1);
+    }
+
+    return false;
+  });
+
+  return src_ip;
+}
+
 void IPStack::assign_ip(Interface *iface, IPAddr address, uint8_t prefix_len) {
-  AddrState& addr_state = ips.at(address.v4());
+  AddrState &addr_state = ips.at(address.v4());
   addr_state.iface = iface;
   addr_state.prefix_len = prefix_len;
 }
