@@ -31,22 +31,11 @@ struct JointStruct {
       (
           [&]() {
             if (field_var.index() == I)
-              result = Tr(std::get<I>(field_var));
+              result = Tr(std::get<I>(field_var).value());
           }(),
           ...);
 
       return result.value();
-    }
-
-    template <size_t... I>
-      requires std::is_base_of_v<FieldTypeVariant, Tr>
-    void assign(const Tr &var, std::index_sequence<I...>) const {
-      (
-          [&]() {
-            if (field_var.index() == I)
-              std::get<I>(field_var) = std::get<I>(var);
-          }(),
-          ...);
     }
 
     template <size_t... I>

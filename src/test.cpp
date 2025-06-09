@@ -113,8 +113,6 @@ int main() {
   stack.add_interface(tap);
   stack.ip.router().add_route(jay::ip::IPv4Addr {10, 0, 0, 0}, 24, tap.get(), std::nullopt, jay::ip::IPv4Addr {10, 0, 0, 2});
   stack.ip.assign_ip(tap.get(), jay::ip::IPv4Addr {10, 0, 0, 2}, 24);
-
-
   stack.ip.mcast_join(tap.get(), jay::ip::IPv4Addr {224, 0, 0, 3});
 
   jay::Buf payload(10000);

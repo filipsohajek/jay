@@ -87,7 +87,7 @@ public:
 
   auto span() const { return buffer; }
   size_t size() const { return buffer.size(); }
-  StructWriter slice(size_t offset, size_t size = std::dynamic_extent) {
+  StructWriter slice(size_t offset, size_t size = std::dynamic_extent) const {
     return {buffer.subspan(offset, size)};
   }
 

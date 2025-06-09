@@ -35,22 +35,63 @@ void IPStack::ip_input(PBuf packet, IPVersion version) {
       return;
     }
   }
+
   if (ip_hdr.is_v4()) {
-    IPFragData frag_data = ip_hdr.v4().frag_data().read().value();
-    if (frag_data.more_frags() || (frag_data.frag_offset() > 0)) {
-      reassemble_single(std::move(packet), frag_data);
+    ip_input_v4(std::move(packet));
+  } else {
+    ip_input_v6(std::move(packet));
+  }
+}
+
+void IPStack::ip_input_v4(PBuf packet) {
+  IPv4Header v4_hdr = packet->ip().v4();
+  IPFragData frag_data = v4_hdr.frag_data().read().value();
+  if (frag_data.more_frags() || (frag_data.frag_offset() > 0)) {
+    reassemble_single(std::move(packet), frag_data);
+    return;
+  }
+  for (auto opt_field : v4_hdr.options()) {
+    auto opt_res = opt_field.read();
+    if (opt_res.has_error())
+      return;
+    IPv4Option v4_opt = opt_res.value();
+    auto opt_variant = v4_opt.option().variant();
+    if (std::holds_alternative<IPv4RAOption>(opt_variant))
+      packet->router_alert = true;
+  }
+  ip_deliver(std::move(packet), v4_hdr.proto());
+}
+
+void IPStack::ip_input_v6(PBuf packet) {
+  IPv6Header v6_hdr = packet->ip().v6();
+
+  auto ehdr_it = v6_hdr.exthdr_begin();
+
+  for (; ehdr_it != v6_hdr.exthdr_end(); ehdr_it++) {
+    auto ehdr_opt = *ehdr_it;
+    if (std::holds_alternative<IPv6HBHOptions>(ehdr_opt)) {
+      // TODO
+      IPv6HBHOptions hbh_opts = std::get<IPv6HBHOptions>(ehdr_opt);
+      for (auto opt_field : hbh_opts.options()) {
+        auto opt_res = opt_field.read();
+        if (opt_res.has_error())
+          return;
+        auto opt_variant = opt_res.value().data().variant();
+        if (std::holds_alternative<IPv6RAOption>(opt_variant))
+          packet->router_alert = true;
+      }
+    } else if (std::holds_alternative<IPv6FragData>(ehdr_opt)) {
+      reassemble_single(std::move(packet), std::get<IPv6FragData>(ehdr_opt));
       return;
     }
   }
-
-  ip_deliver(std::move(packet));
+  ip_deliver(std::move(packet), IPProto(ehdr_it.next_header));
 }
 
-void IPStack::ip_deliver(PBuf packet) {
-  IPHeader ip_hdr = packet->ip();
-  switch (ip_hdr.proto()) {
+void IPStack::ip_deliver(PBuf packet, IPProto proto) {
+  switch (proto) {
   case IPProto::ICMP:
-    if (ip_hdr.version() != IPVersion::V4)
+    if (!packet->ip().is_v4())
       break;
     icmp_input(std::move(packet), IPVersion::V4);
     break;
@@ -58,6 +99,8 @@ void IPStack::ip_deliver(PBuf packet) {
     udp_deliver(std::move(packet));
     break;
   case IPProto::IGMP:
+    if (!packet->ip().is_v4())
+      break;
     igmp_deliver(std::move(packet));
     break;
   default:
@@ -80,13 +123,16 @@ void IPStack::igmp_deliver(PBuf packet) {
       uint16_t max_resp_ms = igmp_header.max_resp_time() * 100;
       std::mt19937 mt;
       std::uniform_int_distribution<uint16_t> dur_unif(0, max_resp_ms);
-      Interface* iface = packet->iface;
-      auto resp_timer = timers.create(std::chrono::milliseconds {dur_unif(mt)}, [this, iface, group_addr](Timer* timer) {
-        std::unique_ptr<Timer> search_ptr(timer);
-        mcast_resp_timers.erase(search_ptr);
-        igmp_send_report(IGMPMessageType::V2_MEMBER_REPORT, iface, group_addr);
-        search_ptr.release();
-      });
+      Interface *iface = packet->iface;
+      auto resp_timer =
+          timers.create(std::chrono::milliseconds{dur_unif(mt)},
+                        [this, iface, group_addr](Timer *timer) {
+                          std::unique_ptr<Timer> search_ptr(timer);
+                          mcast_resp_timers.erase(search_ptr);
+                          igmp_send_report(IGMPMessageType::V2_MEMBER_REPORT,
+                                           iface, group_addr);
+                          search_ptr.release();
+                        });
       mcast_resp_timers.insert(std::move(resp_timer));
     }
   }
@@ -201,7 +247,7 @@ void IPStack::arp_input(PBuf packet) {
 
   } else if (arp_hdr.op() == ARPOp::REPLY) {
     auto queue_opt = packet->iface->neighbours.process_adv(
-        arp_hdr.sdr_iaddr(), arp_hdr.sdr_haddr(),
+        arp_hdr.sdr_iaddr().value(), arp_hdr.sdr_haddr(),
         {.router = false, .solicited = true, .override = false});
     if (!queue_opt.has_value())
       return;
@@ -266,17 +312,7 @@ void IPStack::ip_output_resolve(PBuf packet) {
 }
 
 void IPStack::ip_output_fragment(PBuf packet, size_t if_mtu) {
-  std::mt19937 mt{};
-  uint32_t ident = std::uniform_int_distribution<uint32_t>{}(mt);
   size_t frag_offset = 0;
-  bool last_before = true;
-  if (packet->forwarded) {
-    IPFragData frag_data = packet->ip().v4().frag_data().read().value();
-    ident = frag_data.identification();
-    last_before = !frag_data.more_frags();
-    frag_offset = frag_data.frag_offset();
-  }
-
   while (packet->size() > 0) {
     PBuf fragment;
     fragment->iface = packet->iface;
@@ -286,17 +322,15 @@ void IPStack::ip_output_fragment(PBuf packet, size_t if_mtu) {
     fragment->reserve_headers();
     IPFragData frag_data;
     fragment->construct_net_hdr<IPHeader>(packet->ip().version(), packet->ip(),
-                                          frag_data);
+                                          &frag_data);
 
     size_t frag_payload_size = if_mtu - fragment->ip().size();
-    frag_data.identification() = ident;
     if (packet->size() > frag_payload_size) {
       frag_data.more_frags() = true;
     } else {
       frag_payload_size = packet->size();
-      frag_data.more_frags() = !last_before;
     }
-    frag_data.frag_offset() = frag_offset;
+    frag_data.frag_offset() = frag_data.frag_offset() + frag_offset;
 
     frag_offset += frag_payload_size;
     fragment->insert(*packet, 0, frag_payload_size);
@@ -316,8 +350,8 @@ void IPStack::ip_output_final(PBuf packet) {
       [&](auto tspt_hdr) {
         if constexpr (std::is_same_v<decltype(tspt_hdr), udp::UDPHeader>) {
           tspt_hdr.checksum() = 0;
-          tspt_hdr.checksum() =
-              inet_csum(packet->buf(), packet->ip().pseudohdr_sum());
+          tspt_hdr.checksum() = inet_csum(
+              packet->buf(), packet->ip().pseudohdr_sum(IPProto::UDP));
         } else if constexpr (std::is_same_v<decltype(tspt_hdr), ICMPHeader>) {
           tspt_hdr.checksum() = 0;
           tspt_hdr.checksum() = inet_csum(packet->buf());
@@ -472,7 +506,8 @@ void IPStack::mcast_leave(Interface *iface, IPAddr group_addr) {
   }
 }
 
-void IPStack::igmp_send_report(IGMPMessageType msg_type, Interface *iface, IPv4Addr group_addr) {
+void IPStack::igmp_send_report(IGMPMessageType msg_type, Interface *iface,
+                               IPv4Addr group_addr) {
   PBuf report_packet;
   report_packet->iface = iface;
   report_packet->reserve_headers();
@@ -482,16 +517,18 @@ void IPStack::igmp_send_report(IGMPMessageType msg_type, Interface *iface, IPv4A
   report_packet->unmask(igmp_hdr.size());
   igmp_hdr.checksum() = inet_csum(report_packet->buf());
   IPRAOption ra_opt;
-  auto ip_hdr = report_packet->construct_net_hdr<IPHeader>(IPVersion::V4, ra_opt).value();
-  ip_hdr.proto() = IPProto::IGMP;
+  auto ip_hdr =
+      report_packet
+          ->construct_net_hdr<IPHeader>(IPVersion::V4, IPProto::IGMP, &ra_opt)
+          .value();
 
   switch (msg_type) {
-    case IGMPMessageType::LEAVE_GROUP:
-      ip_hdr.dst_addr() = IPv4Addr {224, 0, 0, 2};
-      break;     
-    default:
-      ip_hdr.dst_addr() = group_addr;
-      break;
+  case IGMPMessageType::LEAVE_GROUP:
+    ip_hdr.dst_addr() = IPv4Addr{224, 0, 0, 2};
+    break;
+  default:
+    ip_hdr.dst_addr() = group_addr;
+    break;
   }
   ip_hdr.src_addr() = select_src_addr(group_addr, iface);
   ip_hdr.ttl() = 1;

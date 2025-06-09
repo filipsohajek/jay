@@ -71,6 +71,14 @@ template <typename T, bool NBO = true> struct Field {
     cur.write<T>(0, data, NBO);
   }
 
+  template<typename Ta>
+  requires std::is_assignable_v<T, Ta>
+  void operator=(const Ta& data) const {
+    T value = T(*this);
+    value = data;
+    *this = value;
+  }
+
   operator T() const
     requires IsBufReadable<T> 
   {
@@ -181,9 +189,9 @@ private:
   static const size_t B_LEN = B_END - START_OFFSET;
   static const size_t SHIFT_LEN = 8 * B_END - END;
   using DeserType = std::conditional_t<
-      B_LEN == 1, uint8_t,
-      std::conditional_t<B_LEN == 2, uint16_t,
-                         std::conditional_t<B_LEN == 4, uint32_t, void>>>;
+      B_LEN <= 1, uint8_t,
+      std::conditional_t<B_LEN <= 2, uint16_t,
+                         std::conditional_t<B_LEN <= 4, uint32_t, void>>>;
   static const DeserType MASK = ((DeserType{1} << Length) - 1) << SHIFT_LEN;
 
 public:
@@ -199,6 +207,10 @@ public:
   operator Tr() const {
     DeserType deser_val = cur.read<DeserType>(START_OFFSET, true);
     return Tr(((MASK & deser_val) >> SHIFT_LEN) * Mult);
+  }
+
+  Tr value() const {
+    return *this;
   }
 
   bool operator==(const BitField<Tr, Offset, Length> &rhs) {
@@ -223,13 +235,20 @@ struct VarArrayField {
 
     Field<Ti> operator*() const { return {cur}; }
 
-    Iterator operator++(int) {
+    Iterator& operator++() {
       if (is_end())
-        return;
+        return *this;
       cur = {cur.span().subspan(cur_size())};
       end = is_end();
       return *this;
     }
+
+    Iterator operator++(int) {
+      auto iter = *this;
+      ++(*this);
+      return iter;
+    }
+
     bool operator==(const Iterator &other) const {
       return (base_cur == other.base_cur) && (end == other.end);
     }

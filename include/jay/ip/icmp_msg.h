@@ -9,6 +9,10 @@ template<typename TMsg>
 struct ICMPv4TypeAccessor {
   constexpr static const uint8_t TAG = TMsg::V4_TYPE;
 };
+template<typename TMsg> 
+struct ICMPv6TypeAccessor {
+  constexpr static const uint8_t TAG = TMsg::V6_TYPE;
+};
 
 enum class TimeExceededType : uint8_t {
   HOP_LIMIT = 0,
@@ -34,13 +38,13 @@ struct ICMPCode {
         code = (ver == IPVersion::V4) ? 0 : 0;
         break;
       case UnreachableReason::HOST_UNREACHABLE:
-        code = (ver == IPVersion::V4) ? 1 : 0;
+        code = (ver == IPVersion::V4) ? 1 : 3;
         break;
       case UnreachableReason::PORT_UNREACHABLE:
-        code = (ver == IPVersion::V4) ? 3 : 0;
+        code = (ver == IPVersion::V4) ? 3 : 4;
         break;
       case UnreachableReason::PACKET_TOO_BIG:
-        code = (ver == IPVersion::V4) ? 4 : 0;
+        code = 4;
         break;
       default:
         code = static_cast<uint8_t>(unreach_code);
@@ -62,6 +66,15 @@ struct ICMPCode {
         case 4:
           return UnreachableReason::PACKET_TOO_BIG;
       }
+    } else {
+      switch (code) {
+        case 0:
+          return UnreachableReason::NETWORK_UNREACHABLE;
+        case 3:
+          return UnreachableReason::HOST_UNREACHABLE;
+        case 4:
+          return UnreachableReason::PORT_UNREACHABLE;
+      }
     }
     return static_cast<UnreachableReason>(code);
   }
@@ -72,6 +85,7 @@ struct ICMPCode {
 struct ICMPEchoRequestMessage : public BufStruct<ICMPEchoRequestMessage, ICMPHeaderError> {
   using BufStruct::BufStruct;
   constexpr static const uint8_t V4_TYPE = 8;
+  constexpr static const uint8_t V6_TYPE = 0x80;
   ICMPEchoRequestMessage() : BufStruct<ICMPEchoRequestMessage, ICMPHeaderError>(StructWriter({})) {};
   STRUCT_FIELD(ident, 0, uint16_t);
   STRUCT_FIELD(seq_num, 2, uint16_t);
@@ -89,6 +103,7 @@ struct ICMPEchoRequestMessage : public BufStruct<ICMPEchoRequestMessage, ICMPHea
 struct ICMPEchoReplyMessage : public BufStruct<ICMPEchoReplyMessage, ICMPHeaderError> {
   using BufStruct::BufStruct;
   constexpr static const uint8_t V4_TYPE = 0;
+  constexpr static const uint8_t V6_TYPE = 0x81;
   ICMPEchoReplyMessage() : BufStruct<ICMPEchoReplyMessage, ICMPHeaderError>(StructWriter({})) {};
 
   STRUCT_FIELD(ident, 0, uint16_t);
@@ -107,6 +122,7 @@ struct ICMPEchoReplyMessage : public BufStruct<ICMPEchoReplyMessage, ICMPHeaderE
 struct ICMPTimeExceededMessage : public BufStruct<ICMPTimeExceededMessage, ICMPHeaderError> {
   using BufStruct::BufStruct;
   constexpr static const uint8_t V4_TYPE = 11;
+  constexpr static const uint8_t V6_TYPE = 0x3;
   ICMPTimeExceededMessage() : BufStruct<ICMPTimeExceededMessage, ICMPHeaderError>(StructWriter({})) {};
 
   STRUCT_FIELD(_unused, 0, uint32_t);
@@ -126,6 +142,7 @@ struct ICMPTimeExceededMessage : public BufStruct<ICMPTimeExceededMessage, ICMPH
 struct ICMPDestinationUnreachableMessage : public BufStruct<ICMPDestinationUnreachableMessage, ICMPHeaderError> {
   using BufStruct::BufStruct;
   constexpr static const uint8_t V4_TYPE = 3;
+  constexpr static const uint8_t V6_TYPE = 0x1;
   ICMPDestinationUnreachableMessage() : BufStruct<ICMPDestinationUnreachableMessage, ICMPHeaderError>(StructWriter({})) {};
 
   STRUCT_FIELD(_unused, 0, uint32_t);

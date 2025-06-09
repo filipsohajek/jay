@@ -7,7 +7,8 @@ enum class IPHeaderError {
   BAD_VERSION,
   CHECKSUM_ERROR,
   CANNOT_COPY_OPTION,
-  NO_SIZE_HINT
+  NO_SIZE_HINT,
+  OPTION_ERROR
 };
 
 enum class ICMPHeaderError { 

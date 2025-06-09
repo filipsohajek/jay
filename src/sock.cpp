@@ -10,8 +10,7 @@ void Socket::send_pbuf(PBuf packet, std::optional<IPAddr> dst_ip) {
   }
   IPAddr ip = dst_ip.value();
 
-  auto ip_hdr = packet->construct_net_hdr<IPHeader>(ip.version()).value();
-  ip_hdr.proto() = _protocol;
+  auto ip_hdr = packet->construct_net_hdr<IPHeader>(ip.version(), _protocol).value();
   ip_hdr.dst_addr() = ip;
   if (_local_addr.has_value()) {
     ip_hdr.src_addr() = _local_addr.value();

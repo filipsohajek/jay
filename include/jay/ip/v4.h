@@ -80,105 +80,16 @@ public:
 public:
   using ErrorType = IPHeaderError;
 
-  static Result<IPv4Header, ErrorType> read(StructWriter cur) {
-    IPv4Header hdr{cur};
-    if (cur.size() < 4*hdr.ihl())
-      return ResultError(IPHeaderError::OUT_OF_BOUNDS);
-    cur = cur.span().subspan(0, 4*hdr.ihl());
-    hdr.cur = cur;
-    if (inet_csum(cur.span()) != 0)
-      return ResultError(IPHeaderError::CHECKSUM_ERROR);
-    if (hdr.version() != IPVersion::V4)
-      return ResultError(IPHeaderError::BAD_VERSION);
-    return hdr;
-  }
-
-  template<typename ...CArgT>
-  static Result<IPv4Header, ErrorType> construct(StructWriter cur, CArgT&& ...args) {
-    size_t total_size = size_hint(std::forward<CArgT>(args)...).value();
-    cur = cur.span().subspan(0, total_size);
-    IPv4Header hdr{cur};
-    if (cur.size() != total_size)
-      return ResultError(IPHeaderError::OUT_OF_BOUNDS);
-    cur.slice(0, MIN_SIZE).reset();
-    hdr.version() = IPVersion::V4; 
-    hdr.ihl() = cur.span().size() / 4;
-    
-    std::optional<IPv4Header::ErrorType> error;
-    ([&](CArgT arg) {
-      if constexpr (std::is_same_v<decltype(arg), IPFragData&>) {
-        arg = hdr.frag_data().construct().value();
-      } else if constexpr (std::is_same_v<decltype(arg), IPRAOption&>) {
-        IPv4Option first_opt = (*hdr.options().begin()).construct().value();
-        arg = first_opt.option().set<IPv4RAOption>().value();
-        first_opt.length() = 2 + arg.size();
-        first_opt.copied() = true;
-      } else if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, IPHeader>) {
-        if (!arg.is_v4()) {
-          error = IPHeaderError::BAD_VERSION;
-          return;
-        }
-        IPv4Header v4_hdr = arg.v4();
-        if (v4_hdr.options().begin() != v4_hdr.options().end()) {
-          error = IPHeaderError::CANNOT_COPY_OPTION; 
-          return;
-        }
-        std::ranges::copy(v4_hdr.cursor().span(), cur.span().begin());
-        
-        hdr.total_len() = 0;
-        hdr.hdr_csum() = 0;
-        IPv4FragData frag_data = hdr.frag_data().read().value();
-        frag_data.identification() = 0;
-        frag_data.frag_offset() = 0;
-        frag_data.more_frags() = false;
-      } else {
-        static_assert(DependentFalse_v<decltype(arg)>, "unknown construction argument for an IPv4 header");
-      }
-    }(std::forward<CArgT>(args)), ...);
-  
-    if (error.has_value())
-      return ResultError(error.value());
-    return hdr;
-  }
-
-  void copy_to(IPv4Header& dest) const {
-    std::ranges::copy(cur.span().subspan(0, size()), dest.cur.span().begin());
-  }
+  static Result<IPv4Header, ErrorType> read(StructWriter cur);
+  static Result<size_t, ErrorType> size_hint(size_t opts_size);
+  static Result<size_t, ErrorType> size_hint(IPHeader& base_hdr, IPFragData* = nullptr);
+  static Result<size_t, ErrorType> size_hint(IPProto, IPRAOption* = nullptr);
+  static Result<IPv4Header, ErrorType> construct(StructWriter cur, size_t opts_size);
+  static Result<IPv4Header, ErrorType> construct(StructWriter cur, IPHeader& base_hdr, IPFragData* = nullptr);
+  static Result<IPv4Header, ErrorType> construct(StructWriter cur, IPProto, IPRAOption* = nullptr);
 
   size_t size() const {
     return 4*ihl();
-  }
-
-  uint32_t pseudohdr_sum() const {
-    return IPv4Addr(src_addr()).csum() + IPv4Addr(dst_addr()).csum() + uint32_t(IPProto(proto())) + uint16_t(total_len_le() - size()); 
-  }
-
-  template<typename ...CArgT>
-  static Result<size_t, ErrorType> size_hint(CArgT&&... args) {
-    size_t unaligned_size = MIN_SIZE;
-    std::optional<IPv4Header::ErrorType> error;
-    ([&](CArgT arg) {
-      if constexpr (std::is_same_v<decltype(arg), IPFragData&>) {
-        unaligned_size += 0;
-      } else if constexpr (std::is_same_v<decltype(arg), IPRAOption&>) {
-        unaligned_size += 4;
-      } else if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, IPHeader>){
-        if (!arg.is_v4()) {
-          error = IPHeaderError::BAD_VERSION;
-          return;
-        }
-        IPv4Header v4_hdr = arg.v4();
-        unaligned_size = v4_hdr.size();
-        if (v4_hdr.options().begin() != v4_hdr.options().end()) {
-          error = IPHeaderError::CANNOT_COPY_OPTION; 
-        }
-      } else {
-        static_assert(DependentFalse_v<decltype(arg)>, "unknown construction argument for an IPv4 header");
-      }
-    }(std::forward<CArgT>(args)), ...);
-    if (error.has_value())
-      return ResultError(error.value());
-    return 4 * ((unaligned_size + 3) / 4);
   }
 };
 }

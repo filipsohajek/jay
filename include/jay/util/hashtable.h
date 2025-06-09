@@ -35,7 +35,7 @@ template <typename T, size_t S> struct hash<std::array<T, S>> {
 template <> struct hash<jay::ip::IPv4Addr> : public hash<std::array<uint8_t, 4>> {};
 
 template <>
-struct hash<jay::ip::IPAddr> : public hash<std::variant<jay::ip::IPv4Addr>> {};
+struct hash<jay::ip::IPAddr> : public hash<std::array<uint8_t, 16>> {};
 } // namespace std
 
 namespace jay {

@@ -36,12 +36,15 @@ public:
   void mcast_join(Interface*, IPAddr);
   void mcast_leave(Interface*, IPAddr);
 private:
+  void ip_input_v4(PBuf);
+  void ip_input_v6(PBuf);
+
   void arp_output(PBuf);
   void ip_output_resolve(PBuf);
   void ip_output_fragment(PBuf, size_t if_mtu);
   void ip_output_final(PBuf);
 
-  void ip_deliver(PBuf);
+  void ip_deliver(PBuf, IPProto);
   void udp_deliver(PBuf);
   void igmp_deliver(PBuf);
   void icmp_notify_unreachable(IPAddr, UnreachableReason,

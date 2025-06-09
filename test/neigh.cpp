@@ -34,7 +34,7 @@ TEST_CASE("NeighCache initial resolution", "[neighbour]") {
   jay::ip::IPAddr src_addr = jay::ip::IPv4Addr{0x5, 0x6, 0x7, 0x8};
   jay::PBuf packet;
   packet->reserve_headers();
-  packet->construct_net_hdr<jay::ip::IPHeader>(jay::ip::IPVersion::V4).value().src_addr() = src_addr;
+  packet->construct_net_hdr<jay::ip::IPHeader>(jay::ip::IPVersion::V4, jay::ip::IPProto::UDP).value().src_addr() = src_addr;
   packet->nh_iaddr = nh_iaddr;
 
   REQUIRE(!ncache.resolve(std::move(packet)).has_value());
@@ -92,7 +92,7 @@ TEST_CASE("NeighCache initial resolution", "[neighbour]") {
                                      {.is_adv = true, .solicited = true});
   jay::PBuf packet2;
   packet2->reserve_headers();
-  packet2->construct_net_hdr<jay::ip::IPHeader>(jay::ip::IPVersion::V4).value().src_addr() = src_addr;
+  packet2->construct_net_hdr<jay::ip::IPHeader>(jay::ip::IPVersion::V4, jay::ip::IPProto::UDP).value().src_addr() = src_addr;
   packet2->nh_iaddr = nh_iaddr;
 
 

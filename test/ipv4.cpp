@@ -9,7 +9,7 @@
 TEST_CASE("IPv4 header (de)serialization", "[ipv4]") {
   std::vector<uint8_t> buf(jay::ip::IPv4Header::MIN_SIZE);
   jay::StructWriter cur{buf};
-  jay::ip::IPv4Header hdr = jay::ip::IPv4Header::construct(cur).value();
+  jay::ip::IPv4Header hdr = jay::ip::IPv4Header::construct(cur, jay::ip::IPProto::UDP).value();
   hdr.dscp() = 4;
   hdr.ecn() = 1;
   jay::ip::IPv4FragData frag_data = hdr.frag_data().construct().value();
@@ -19,7 +19,6 @@ TEST_CASE("IPv4 header (de)serialization", "[ipv4]") {
   frag_data.frag_offset() = 1480;
   
   hdr.ttl() = 128;
-  hdr.proto() = jay::ip::IPProto::UDP;
   hdr.src_addr() = jay::ip::IPv4Addr {192, 168, 1, 10};
   hdr.dst_addr() = jay::ip::IPv4Addr {192, 168, 1, 1};
   hdr.total_len() = 20;

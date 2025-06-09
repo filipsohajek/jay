@@ -60,6 +60,7 @@ public:
 
   bool local = false;
   bool forwarded = false;
+  bool router_alert = false;
   
   bool has_last_fragment = false;
 
@@ -109,12 +110,12 @@ public:
   bool is_icmp() { return std::holds_alternative<ip::ICMPHeader>(tspt_hdr); }
   bool is_udp() { return std::holds_alternative<udp::UDPHeader>(tspt_hdr); }
 
-  EthHeader eth() { return std::get<EthHeader>(link_hdr); }
-  ip::IPHeader ip() { return std::get<ip::IPHeader>(net_hdr); }
-  ip::ARPHeader arp() { return std::get<ip::ARPHeader>(net_hdr); }
-  ip::IGMPHeader igmp() { return std::get<ip::IGMPHeader>(net_hdr); }
-  ip::ICMPHeader icmp() { return std::get<ip::ICMPHeader>(tspt_hdr); }
-  udp::UDPHeader udp() { return std::get<udp::UDPHeader>(tspt_hdr); }
+  EthHeader& eth() { return std::get<EthHeader>(link_hdr); }
+  ip::IPHeader& ip() { return std::get<ip::IPHeader>(net_hdr); }
+  ip::ARPHeader& arp() { return std::get<ip::ARPHeader>(net_hdr); }
+  ip::IGMPHeader& igmp() { return std::get<ip::IGMPHeader>(net_hdr); }
+  ip::ICMPHeader& icmp() { return std::get<ip::ICMPHeader>(tspt_hdr); }
+  udp::UDPHeader& udp() { return std::get<udp::UDPHeader>(tspt_hdr); }
 
   friend std::ostream &operator<<(std::ostream &os, PBufStruct &addr) {
     os << "Packet (unmasked size=" << addr.size() << ")\n";
@@ -162,8 +163,8 @@ public:
     auto icmp_hdr = packet->construct_tspt_hdr<ip::ICMPHeader>(dst_addr.version(), msg ? *msg : tmp_msg, code).value();
     packet->unmask(icmp_hdr.size());
 
-    auto ip_hdr = packet->construct_net_hdr<ip::IPHeader>(dst_addr.version()).value();
-    ip_hdr.proto() = ip::IPProto::ICMP;
+    ip::IPVersion ip_ver = dst_addr.version();
+    auto ip_hdr = packet->construct_net_hdr<ip::IPHeader>(ip_ver, (ip_ver == ip::IPVersion::V4) ? ip::IPProto::ICMP : ip::IPProto::ICMPv6).value();
     ip_hdr.dst_addr() = dst_addr;
     if (src_addr.has_value())
       ip_hdr.src_addr() = src_addr.value();
