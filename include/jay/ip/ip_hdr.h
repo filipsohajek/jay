@@ -44,7 +44,7 @@ struct IPHeader : public std::variant<IPv4Header, IPv6Header>, JointStruct {
   }
 
   uint32_t pseudohdr_sum(IPProto protocol) {
-    return IPAddr(src_addr()).csum() + IPAddr(dst_addr()).csum() + upper_layer_size() + static_cast<uint8_t>(protocol);
+    return IPAddr(src_addr()).be_sum() + IPAddr(dst_addr()).be_sum() + __bswap_16(static_cast<uint16_t>(upper_layer_size())) + static_cast<uint8_t>(protocol);
   }
 
   static Result<IPHeader, IPHeaderError> read(StructWriter cur, IPVersion ver) {

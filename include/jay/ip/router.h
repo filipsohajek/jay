@@ -25,7 +25,7 @@ public:
       return &dst_cache[dst_addr];
 
     Destination& dst = dst_cache[dst_addr];
-    auto [match_prefix, match_route, _match_len] = rt_table.match_longest(dst_addr.v4(), 32);
+    auto [match_prefix, match_route, _match_len] = rt_table.match_longest(dst_addr);
     if (match_route == nullptr)
       return ResultError(Error::NO_ROUTE);
     dst.route = *match_route;
@@ -63,7 +63,15 @@ public:
   }
 
   void add_route(IPAddr prefix, size_t prefix_len, Interface* iface, std::optional<IPAddr> nh_iaddr, std::optional<IPAddr> src_iaddr) {
-    rt_table.emplace(prefix.v4(), prefix_len, Route {
+    rt_table.emplace(prefix, prefix_len, Route {
+      .iface = iface,
+      .nh_iaddr = nh_iaddr,
+      .src_iaddr = src_iaddr
+    });
+  }
+
+  void add_route(IPv4Addr prefix, size_t prefix_len, Interface* iface, std::optional<IPv4Addr> nh_iaddr, std::optional<IPv4Addr> src_iaddr) {
+    rt_table.emplace(prefix, prefix_len + 96, Route {
       .iface = iface,
       .nh_iaddr = nh_iaddr,
       .src_iaddr = src_iaddr
@@ -71,6 +79,6 @@ public:
   }
 private:
   hash_table<IPAddr, Destination> dst_cache;
-  BitTrie<IPv4Addr, Route> rt_table;
+  BitTrie<IPAddr, Route> rt_table;
 };
 }

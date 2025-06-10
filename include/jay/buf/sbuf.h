@@ -358,6 +358,10 @@ public:
     // call
     while ((chunk_it != other_buf.end()) && (inserted_size < length)) {
       BufChunk chunk = chunk_it.sliced_chunk();
+      if (chunk.size() == 0) {
+        chunk_it = chunk_it.next_chunk();
+        continue;
+      }
       if (chunk.size() + inserted_size > length)
         chunk = chunk.slice(0, length - inserted_size);
       auto insert_res = insert_chunk(chunk, inserted_size);
@@ -410,6 +414,8 @@ public:
     }
     chunks.erase(end_it.chunk_it + 1, chunks.end());
     end_it.chunk() = end_it.chunk().slice(0, end_it.chunk_off);
+    if (end_it.chunk().size() == 0)
+      chunks.erase(end_it.chunk_it, end_it.chunk_it + 1);
     _size = new_size + mask_off;
   }
 };

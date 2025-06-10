@@ -5,6 +5,7 @@
 #include <memory>
 #include <ranges>
 #include <stack>
+#include <iostream>
 
 namespace jay {
 template <typename T>
@@ -34,7 +35,7 @@ private:
     }
     Iterator operator++(int) {
       Iterator it = *this;
-      (*this)++;
+      ++(*this);
       return it;
     }
     Iterator operator+(size_t increment) {
@@ -55,9 +56,9 @@ private:
 
 public:
   T value;
-  size_t length;
+  size_t length = 8 * sizeof(T);
 
-  bool operator[](size_t index) { return value[index / 8] >> (7 - index % 8); }
+  bool operator[](size_t index) { return (value[index / 8] >> (7 - index % 8)) & 0x1; }
 
   void set(size_t index, bool state) {
     size_t offset = 7 - index % 8;
@@ -126,7 +127,7 @@ public:
     }
   };
 private:
-  static const size_t KEY_FULL_SIZE = 8 * sizeof(TKey) * sizeof(RemoveExtent_t<TKey>);
+  static const size_t KEY_FULL_SIZE = 8 * sizeof(TKey);
   struct EndSentinel {};
 
   struct InorderIterator {

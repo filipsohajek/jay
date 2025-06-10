@@ -9,7 +9,7 @@ Result<IPv4Header, IPv4Header::ErrorType> IPv4Header::read(StructWriter cur) {
   if (cur.size() < 4 * hdr.ihl())
     return ResultError(IPHeaderError::OUT_OF_BOUNDS);
   hdr.cur = cur.span().subspan(0, 4 * hdr.ihl());
-  if (inet_csum(cur.span()) != 0)
+  if (inet_csum(hdr.cur.span()) != 0)
     return ResultError(IPHeaderError::CHECKSUM_ERROR);
   if (hdr.version() != IPVersion::V4)
     return ResultError(IPHeaderError::BAD_VERSION);
@@ -77,6 +77,7 @@ IPv4Header::construct(StructWriter cur, IPProto proto, IPRAOption *ra_opt) {
     if (opt_res.has_error())
       return ResultError(IPHeaderError::OPTION_ERROR);
     IPv4Option opt = opt_res.value();
+    opt.length() = 4;
     opt.copied() = true;
     *ra_opt = opt.option().set<IPv4RAOption>().value();
   }

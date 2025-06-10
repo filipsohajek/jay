@@ -44,15 +44,32 @@ struct IPv4Option : public BufStruct<IPv4Option> {
   STRUCT_FIELD(length, 1, uint8_t);
   STRUCT_TAGGED_UNION(option, 2, type(), IPv4RAOption);
   
-  static Result<IPv4Option, BufError> construct(StructWriter cur) { 
+  static Result<IPv4Option, BufError> read(StructWriter cur) { 
     auto strct = IPv4Option {cur};
     if (2 > cur.size())
+      return ResultError<BufError>{BufError::OUT_OF_BOUNDS};
+    if (strct.size() > cur.size())
       return ResultError<BufError>{BufError::OUT_OF_BOUNDS};
     return strct;
   }
 
+  static Result<IPv4Option, BufError> construct(StructWriter cur) { 
+    auto strct = IPv4Option {cur};
+    if (2 > cur.size())
+      return ResultError<BufError>{BufError::OUT_OF_BOUNDS};
+    strct.length() = 2;
+    strct.type() = 0;
+    strct.copied() = false;
+
+    return strct;
+  }
+
+
   size_t size() const {
-    return 2 + length();
+    auto opt_opt = option().variant();
+    if (std::holds_alternative<std::monostate>(opt_opt))
+      return 2;
+    return 2 + option().size();
   }
 };
 

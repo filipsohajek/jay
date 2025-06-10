@@ -127,8 +127,9 @@ struct IPAddr : public std::array<uint8_t, 16> {
     }
   }
   
-  uint32_t csum() const {
-    return inet_csum({reinterpret_cast<const uint8_t*>(this), 16});
+  uint32_t be_sum() const {
+    std::span<const uint16_t> words {reinterpret_cast<const uint16_t*>(this), 8};
+    return std::accumulate(words.begin(), words.end(), 0, [](uint32_t sum, uint16_t word) { return sum + __bswap_16(word); });
   }
 };
 

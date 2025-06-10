@@ -47,8 +47,7 @@ private:
   void ip_deliver(PBuf, IPProto);
   void udp_deliver(PBuf);
   void igmp_deliver(PBuf);
-  void icmp_notify_unreachable(IPAddr, UnreachableReason,
-                               std::optional<PBuf> = std::nullopt);
+  void icmp_notify_unreachable(PBuf, UnreachableReason);
 
 
   void igmp_send_report(IGMPMessageType, Interface*, IPv4Addr);
@@ -70,7 +69,7 @@ private:
     AddrScope scope;
     Interface *iface = nullptr;
   };
-  BitTrie<IPv4Addr, AddrState> ips;
+  BitTrie<IPAddr, AddrState> ips;
 
   using ReassKey = std::tuple<IPAddr, IPAddr, uint32_t>;
   struct Reassembly {

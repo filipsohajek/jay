@@ -14,14 +14,16 @@ void IPStack::ip_input(PBuf packet, IPVersion version) {
   auto ip_hdr = packet->ip();
   IPAddr dst_addr = ip_hdr.dst_addr();
 
-  auto [local_ip, local_ip_state, match_len] = ips.match_longest(dst_addr.v4());
-  if (match_len != 32) {
+  auto [local_ip, local_ip_state, match_len] = ips.match_longest(dst_addr);
+  if (match_len != 128) {
     bool broadcast = false;
-    if (local_ip_state && (match_len >= local_ip_state->prefix_len)) {
-      auto dst_bits = AsBits{dst_addr.v4(), 32};
-      broadcast =
-          std::ranges::all_of(dst_bits.begin() + local_ip_state->prefix_len,
-                              dst_bits.end(), [](bool b) { return b; });
+    if (dst_addr.is_v4()) {
+      if (local_ip_state && (match_len >= local_ip_state->prefix_len)) {
+        auto dst_bits = AsBits{dst_addr};
+        broadcast =
+            std::ranges::all_of(dst_bits.begin() + local_ip_state->prefix_len,
+                                dst_bits.end(), [](bool b) { return b; });
+      }
     }
     if (!broadcast && !dst_addr.is_multicast()) {
       packet->forwarded = true;
@@ -174,16 +176,15 @@ void IPStack::icmp_input(PBuf packet, IPVersion version) {
 }
 
 void IPStack::reassemble_timeout(ReassKey reass_key, Reassembly &reass) {
+  reass.packet->unmask(reass.packet->ip().size());
   Buf &reass_buf = reass.packet->buf();
-  auto it = reass_buf.begin();
-  while ((it != reass_buf.end()) && it.is_hole()) {
-    it = it.next_chunk();
-  }
-  Buf orig_buf{it.chunk()};
+  reass_buf.truncate(reass.packet->ip().size());
 
   const auto &[src_ip, dst_ip, ident] = reass_key;
-  output(PBuf::icmp_for<ICMPTimeExceededMessage>(
-      src_ip, nullptr, TimeExceededType::REASSEMBLY, &orig_buf, dst_ip));
+  PBuf reply_packet = PBuf::icmp_for<ICMPTimeExceededMessage>(
+      src_ip, nullptr, TimeExceededType::REASSEMBLY, &reass_buf, dst_ip);
+  reass_queue.erase(reass_key);
+  output(std::move(reply_packet));
 }
 
 void IPStack::reassemble_single(PBuf packet, IPFragData frag_data) {
@@ -226,8 +227,8 @@ void IPStack::arp_input(PBuf packet) {
 
   if (arp_hdr.op() == ARPOp::REQUEST) {
     auto [tgt_ip, tgt_ip_state, match_len] =
-        ips.match_longest(arp_hdr.tgt_iaddr());
-    if (match_len != 32)
+        ips.match_longest(IPAddr::from_v4(arp_hdr.tgt_iaddr()));
+    if (match_len != 128)
       return;
     if (packet->iface != tgt_ip_state->iface)
       return;
@@ -299,9 +300,8 @@ void IPStack::ip_output_resolve(PBuf packet) {
   if (packet->size() > if_mtu) {
     if (packet->ip().is_v4()) {
       if (packet->ip().v4().frag_data().read().value().dont_frag()) {
-        icmp_notify_unreachable(packet->ip().src_addr(),
-                                UnreachableReason::PACKET_TOO_BIG,
-                                std::move(packet));
+        icmp_notify_unreachable(std::move(packet),
+                                UnreachableReason::PACKET_TOO_BIG);
         return;
       }
     }
@@ -396,10 +396,10 @@ void IPStack::solicit_haddr(Interface *iface, IPAddr tgt_iaddr,
                             std::optional<IPAddr> siaddr_hint) {
   IPAddr sdr_iaddr;
   if (siaddr_hint.has_value() &&
-      ips.contains(siaddr_hint.value().v4())) // TODO: verify iface?
+      ips.contains(siaddr_hint.value())) // TODO: verify iface?
     sdr_iaddr = siaddr_hint.value();
   else
-    throw std::invalid_argument("source address selection not implemented");
+    sdr_iaddr = select_src_addr(tgt_iaddr, iface);
 
   if (tgt_iaddr.is_v4()) {
     PBuf solicit_packet;
@@ -418,15 +418,11 @@ void IPStack::solicit_haddr(Interface *iface, IPAddr tgt_iaddr,
   }
 }
 
-void IPStack::icmp_notify_unreachable(IPAddr addr, UnreachableReason reason,
-                                      std::optional<PBuf> packet) {
-  std::optional<IPAddr> src_addr =
-      (packet.has_value() && packet.value()->is_ip())
-          ? std::optional<IPAddr>(packet.value()->ip().dst_addr())
-          : std::nullopt;
+void IPStack::icmp_notify_unreachable(PBuf packet, UnreachableReason reason) {
+  if (packet->is_icmp())
+    return;
   output(PBuf::icmp_for<ICMPDestinationUnreachableMessage>(
-      addr, nullptr, reason,
-      packet.has_value() ? &packet.value()->buf() : nullptr, src_addr));
+      packet->ip().src_addr(), nullptr, reason, &packet->buf()));
 }
 
 void IPStack::setup_interface(Interface *iface) {
@@ -435,8 +431,9 @@ void IPStack::setup_interface(Interface *iface) {
       std::bind(&IPStack::solicit_haddr, this, _1, _2, _3, _4),
       [this](IPAddr addr, Neighbour &neigh) {
         while (!neigh.queue.empty()) {
-          icmp_notify_unreachable(addr, UnreachableReason::HOST_UNREACHABLE,
-                                  std::move(neigh.queue.back()));
+          PBuf queued_packet = std::move(neigh.queue.back());
+          icmp_notify_unreachable(std::move(queued_packet),
+                                  UnreachableReason::HOST_UNREACHABLE);
           neigh.queue.pop_back();
         }
       });
@@ -462,9 +459,9 @@ IPAddr IPStack::select_src_addr(std::optional<IPAddr> daddr_hint,
     auto [right_ip, right_state] = right;
 
     if (daddr_hint.has_value()) {
-      if (left_ip == daddr_hint.value().v4())
+      if (left_ip == daddr_hint.value())
         return false;
-      if (right_ip == daddr_hint.value().v4())
+      if (right_ip == daddr_hint.value())
         return true;
     }
 
@@ -476,9 +473,9 @@ IPAddr IPStack::select_src_addr(std::optional<IPAddr> daddr_hint,
     }
 
     if (daddr_hint.has_value()) {
-      auto left_bits = AsBits{left_ip, 32};
-      auto right_bits = AsBits{right_ip, 32};
-      auto daddr_bits = AsBits{daddr_hint.value().v4(), 32};
+      auto left_bits = AsBits{left_ip};
+      auto right_bits = AsBits{right_ip};
+      auto daddr_bits = AsBits{daddr_hint.value()};
 
       return std::distance(left_bits.begin(),
                            std::ranges::mismatch(left_bits, daddr_bits).in1) <
@@ -536,9 +533,9 @@ void IPStack::igmp_send_report(IGMPMessageType msg_type, Interface *iface,
 }
 
 void IPStack::assign_ip(Interface *iface, IPAddr address, uint8_t prefix_len) {
-  AddrState &addr_state = ips.at(address.v4());
+  AddrState &addr_state = ips.at(address);
   addr_state.iface = iface;
-  addr_state.prefix_len = prefix_len;
+  addr_state.prefix_len = prefix_len + (address.is_v4() ? 96 : 0);
 }
 
 void IPStack::poll() {

@@ -29,7 +29,8 @@ private:
     return TaggedUnionField<decltype(type()), Accessor, 
                             ICMPEchoRequestMessage,
                             ICMPEchoReplyMessage,
-                            ICMPTimeExceededMessage>{cur.span().subspan(4),
+                            ICMPTimeExceededMessage,
+                            ICMPDestinationUnreachableMessage>{cur.span().subspan(4),
                                                   type()};
   }
 public:
