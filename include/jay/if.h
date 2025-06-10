@@ -34,5 +34,10 @@ public:
   /// Returns the maximum size of packet (excluding the Ethernet) header the the interface can transmit.
   virtual uint16_t mtu() const noexcept = 0;
   NeighCache neighbours;
+  
+  std::array<uint8_t, 8> ident() const {
+    HWAddr haddr = addr();
+    return {0x00, 0x00, haddr[0], haddr[1], haddr[2], haddr[3], haddr[4], haddr[5]}; 
+  }
 };
 } // namespace jay

@@ -134,8 +134,9 @@ struct TaggedUnionField {
     std::variant<std::monostate, Ts...> out;
     (
         [&]() {
-          if (DiscType(disc) == TagAccessor<Ts>::TAG)
-            out = Ts::read(cur).value();
+          if constexpr (requires {TagAccessor<Ts>::TAG;})
+            if (DiscType(disc) == TagAccessor<Ts>::TAG)
+              out = Ts::read(cur).value();
         }(),
         ...);
     return out;

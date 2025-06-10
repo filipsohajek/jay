@@ -51,10 +51,11 @@ private:
 
 
   void igmp_send_report(IGMPMessageType, Interface*, IPv4Addr);
+  void mld_send_report(Interface*, IPAddr, bool leave);
 
   IPAddr select_src_addr(std::optional<IPAddr> daddr_hint, Interface* iface = nullptr);
 
-  void icmp_input(PBuf, IPVersion);
+  void icmp_deliver(PBuf, IPVersion);
   void solicit_haddr(Interface *iface, IPAddr tgt_iaddr,
                      std::optional<HWAddr> thaddr_hint,
                      std::optional<IPAddr> siaddr_hint);

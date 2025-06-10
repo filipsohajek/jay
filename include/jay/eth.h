@@ -20,7 +20,7 @@ struct HWAddr : public std::array<uint8_t, 6> {
     return os;
   }
 };
-enum class EtherType : uint16_t { ARP = 0x0806, IPV4 = 0x0800 };
+enum class EtherType : uint16_t { ARP = 0x0806, IPV4 = 0x0800, IPV6 = 0x86dd};
 
 struct EthHeader : public BufStruct<EthHeader> {
   using BufStruct<EthHeader>::BufStruct;

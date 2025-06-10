@@ -80,6 +80,22 @@ struct IPAddr : public std::array<uint8_t, 16> {
     return {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01};
   }
 
+  static IPAddr all_nodes() {
+    return {0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01};
+  }
+
+  static IPAddr all_routers() {
+    return {0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02};
+  }
+
+  static IPAddr unicast_ll(std::array<uint8_t, 8> ident) {
+    return {0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, ident[0], ident[1], ident[2], ident[3], ident[4], ident[5], ident[6]};
+  }
+
+  static IPAddr any() {
+    return {};
+  }
+
   bool is_v4() const { 
     return *this == IPAddr::from_v4(v4());
   }
@@ -127,9 +143,9 @@ struct IPAddr : public std::array<uint8_t, 16> {
     }
   }
   
-  uint32_t be_sum() const {
+  uint32_t sum() const {
     std::span<const uint16_t> words {reinterpret_cast<const uint16_t*>(this), 8};
-    return std::accumulate(words.begin(), words.end(), 0, [](uint32_t sum, uint16_t word) { return sum + __bswap_16(word); });
+    return std::accumulate(words.begin(), words.end(), 0, [](uint32_t sum, uint16_t word) { return sum + word; });
   }
 };
 

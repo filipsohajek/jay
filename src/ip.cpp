@@ -1,5 +1,6 @@
 #include "jay/if.h"
 #include "jay/ip/igmp.h"
+#include "jay/ip/mld.h"
 #include "jay/ip/sock.h"
 #include "jay/ip/stack.h"
 #include "jay/pbuf.h"
@@ -95,7 +96,12 @@ void IPStack::ip_deliver(PBuf packet, IPProto proto) {
   case IPProto::ICMP:
     if (!packet->ip().is_v4())
       break;
-    icmp_input(std::move(packet), IPVersion::V4);
+    icmp_deliver(std::move(packet), IPVersion::V4);
+    break;
+  case IPProto::ICMPv6:
+    if (!packet->ip().is_v6())
+      break;
+    icmp_deliver(std::move(packet), IPVersion::V6);
     break;
   case IPProto::UDP:
     udp_deliver(std::move(packet));
@@ -117,7 +123,7 @@ void IPStack::igmp_deliver(PBuf packet) {
   if (!group_addr.is_multicast())
     return;
 
-  if (packet->construct_net_hdr<IGMPHeader>().has_error())
+  if (packet->read_net_hdr<IGMPHeader>().has_error())
     return;
   auto igmp_header = packet->igmp();
   if (igmp_header.type() == IGMPMessageType::MEMBER_QUERY) {
@@ -146,7 +152,7 @@ void IPStack::udp_deliver(PBuf packet) {
   _sock_table.deliver(std::move(packet));
 }
 
-void IPStack::icmp_input(PBuf packet, IPVersion version) {
+void IPStack::icmp_deliver(PBuf packet, IPVersion version) {
   auto icmp_res = packet->read_tspt_hdr<ICMPHeader>(version);
   if (icmp_res.has_error())
     return;
@@ -169,6 +175,23 @@ void IPStack::icmp_input(PBuf packet, IPVersion version) {
           reply_msg.ident() = uint16_t(msg.ident());
           reply_msg.seq_num() = uint16_t(msg.seq_num());
           output(std::move(reply_packet));
+        } else if constexpr (std::is_same_v<MsgT, MLDQuery>) {
+          IPAddr mcast_addr = msg.mcast_addr();
+          if (mcast_groups.contains({packet->iface, mcast_addr})) {
+            uint16_t max_resp_ms = msg.max_resp_time();
+            std::mt19937 mt;
+            std::uniform_int_distribution<uint16_t> dur_unif(0, max_resp_ms);
+            Interface *iface = packet->iface;
+            auto resp_timer =
+                timers.create(std::chrono::milliseconds{dur_unif(mt)},
+                              [this, iface, mcast_addr](Timer *timer) {
+                                std::unique_ptr<Timer> search_ptr(timer);
+                                mcast_resp_timers.erase(search_ptr);
+                                mld_send_report(iface, mcast_addr, false);
+                                search_ptr.release();
+                              });
+            mcast_resp_timers.insert(std::move(resp_timer));
+          }
         }
         return 0;
       },
@@ -344,6 +367,9 @@ void IPStack::ip_output_final(PBuf packet) {
   if (packet->ip().is_v4()) {
     auto v4_hdr = packet->ip().v4();
     v4_hdr.total_len() = packet->size() + v4_hdr.size();
+  } else {
+    auto v6_hdr = packet->ip().v6();
+    v6_hdr.payload_len() = v6_hdr.exthdr_size() + packet->size();
   }
 
   std::visit(
@@ -354,7 +380,10 @@ void IPStack::ip_output_final(PBuf packet) {
               packet->buf(), packet->ip().pseudohdr_sum(IPProto::UDP));
         } else if constexpr (std::is_same_v<decltype(tspt_hdr), ICMPHeader>) {
           tspt_hdr.checksum() = 0;
-          tspt_hdr.checksum() = inet_csum(packet->buf());
+          if (tspt_hdr.is_v4())
+            tspt_hdr.checksum() = inet_csum(packet->buf());
+          else
+            tspt_hdr.checksum() = inet_csum(packet->buf(), packet->ip().pseudohdr_sum(IPProto::ICMPv6));
         }
       },
       packet->tspt_hdr);
@@ -376,7 +405,7 @@ void IPStack::ip_output_final(PBuf packet) {
   } else {
     packet->construct_link_hdr<EthHeader>();
     packet->eth().ether_type() =
-        packet->ip().is_v4() ? EtherType::IPV4 : EtherType(0);
+        packet->ip().is_v4() ? EtherType::IPV4 : EtherType::IPV6;
     packet->eth().dst_haddr() = packet->nh_haddr.value();
     stack.output(std::move(packet));
   }
@@ -429,7 +458,7 @@ void IPStack::setup_interface(Interface *iface) {
   using namespace std::placeholders;
   iface->neighbours.set_callbacks(
       std::bind(&IPStack::solicit_haddr, this, _1, _2, _3, _4),
-      [this](IPAddr addr, Neighbour &neigh) {
+      [this](IPAddr, Neighbour &neigh) {
         while (!neigh.queue.empty()) {
           PBuf queued_packet = std::move(neigh.queue.back());
           icmp_notify_unreachable(std::move(queued_packet),
@@ -493,6 +522,8 @@ void IPStack::mcast_join(Interface *iface, IPAddr group_addr) {
   mcast_groups.emplace(iface, group_addr);
   if (group_addr.is_v4()) {
     igmp_send_report(IGMPMessageType::V2_MEMBER_REPORT, iface, group_addr.v4());
+  } else {
+    mld_send_report(iface, group_addr, false);
   }
 }
 
@@ -500,6 +531,8 @@ void IPStack::mcast_leave(Interface *iface, IPAddr group_addr) {
   mcast_groups.erase({iface, group_addr});
   if (group_addr.is_v4()) {
     igmp_send_report(IGMPMessageType::LEAVE_GROUP, iface, group_addr.v4());
+  } else {
+    mld_send_report(iface, group_addr, false);
   }
 }
 
@@ -529,6 +562,21 @@ void IPStack::igmp_send_report(IGMPMessageType msg_type, Interface *iface,
   }
   ip_hdr.src_addr() = select_src_addr(group_addr, iface);
   ip_hdr.ttl() = 1;
+  output(std::move(report_packet));
+}
+
+void IPStack::mld_send_report(Interface* iface, IPAddr mcast_addr, bool leave) {
+  PBuf report_packet;
+  if (leave) {
+    MLDDone leave_msg;
+    report_packet = PBuf::icmp_for(IPAddr::all_routers(), &leave_msg);
+    leave_msg.mcast_addr() = mcast_addr;
+  } else {
+    MLDReport report_msg;
+    report_packet = PBuf::icmp_for(mcast_addr, &report_msg);
+    report_msg.mcast_addr() = mcast_addr;
+  }
+  report_packet->iface = iface;
   output(std::move(report_packet));
 }
 

@@ -4,20 +4,26 @@
 #include "jay/ip/common.h"
 #include "jay/ip/hdr_error.h"
 #include "jay/ip/icmp_msg.h"
+#include "jay/ip/mld.h"
+
 namespace jay::ip {
 struct ICMPv4HeaderTag {};
-struct ICMPHeader : public std::variant<ICMPv4HeaderTag>,
+struct ICMPv6HeaderTag {};
+struct ICMPHeader : public std::variant<ICMPv4HeaderTag, ICMPv6HeaderTag>,
                     BufStruct<ICMPHeader> {
-  using std::variant<ICMPv4HeaderTag>::variant;
+  using std::variant<ICMPv4HeaderTag, ICMPv6HeaderTag>::variant;
   using BufStruct<ICMPHeader>::BufStruct;
   using ErrorType = ICMPHeaderError;
 
 private:
   ICMPHeader(IPVersion ver, StructWriter cur)
-      : std::variant<ICMPv4HeaderTag>(
-            ver == IPVersion::V4 ? std::in_place_type_t<ICMPv4HeaderTag>{}
-                                 : std::in_place_type_t<ICMPv4HeaderTag>{}),
-        BufStruct<ICMPHeader>(cur) {}
+      : std::variant<ICMPv4HeaderTag, ICMPv6HeaderTag>(),
+        BufStruct<ICMPHeader>(cur) {
+    if (ver == IPVersion::V4)
+      this->emplace<ICMPv4HeaderTag>();
+    else
+      this->emplace<ICMPv6HeaderTag>();
+  }
 
 public:
   STRUCT_FIELD_LE(checksum, 2, uint16_t);
@@ -30,15 +36,16 @@ private:
                             ICMPEchoRequestMessage,
                             ICMPEchoReplyMessage,
                             ICMPTimeExceededMessage,
-                            ICMPDestinationUnreachableMessage>{cur.span().subspan(4),
+                            ICMPDestinationUnreachableMessage, MLDQuery, MLDReport, MLDDone>{cur.span().subspan(4),
                                                   type()};
   }
 public:
   auto message() {
     if (std::holds_alternative<ICMPv4HeaderTag>(*this)) {
       return message_field<ICMPv4TypeAccessor>().variant();
+    } else {
+      return message_field<ICMPv6TypeAccessor>().variant();
     }
-    throw std::runtime_error("not implemented");
   }
 
   ICMPCode code() const {
@@ -67,6 +74,12 @@ public:
         message = msg_res.value();
       else
         return ResultError(msg_res.error());
+    } else {
+      auto msg_res = hdr.message_field<ICMPv6TypeAccessor>().set<TMsg>();
+      if (msg_res.has_value())
+        message = msg_res.value();
+      else
+        return ResultError(msg_res.error());
     }
     return hdr;
   }
@@ -74,12 +87,14 @@ public:
   size_t size() const {
     if (std::holds_alternative<ICMPv4HeaderTag>(*this)) {
       return 4 + message_field<ICMPv4TypeAccessor>().size();
+    } else {
+      return 4 + message_field<ICMPv6TypeAccessor>().size();
     }
-    throw std::runtime_error("not implemented");
   }
 
   bool is_v4() const { return std::holds_alternative<ICMPv4HeaderTag>(*this); }
-  IPVersion ver() const { return std::holds_alternative<ICMPv4HeaderTag>(*this) ? IPVersion::V4 : IPVersion::V4; }
+  bool is_v6() const { return std::holds_alternative<ICMPv6HeaderTag>(*this); }
+  IPVersion ver() const { return std::holds_alternative<ICMPv4HeaderTag>(*this) ? IPVersion::V4 : IPVersion::V6; }
 
   friend std::ostream &operator<<(std::ostream &os, ICMPHeader &addr) {
     os << "ICMP: version=" << (addr.is_v4() ? 4 : 6) << ", message=";
