@@ -122,14 +122,14 @@ struct IPv6Header : public BufStruct<IPv6Header> {
   ExtHdrIterator::EndSentinel exthdr_end() const { return {}; }
 
   static Result<IPv6Header, ErrorType> read(StructWriter cur);
-  static Result<size_t, ErrorType> size_hint(size_t exthdr_size);
+  static size_t size_hint(size_t exthdr_size);
   static Result<IPv6Header, ErrorType> construct(StructWriter cur,
                                                  size_t exthdr_size);
-  static Result<size_t, ErrorType> size_hint(IPHeader & base_hdr, IPFragData* = nullptr);
+  static size_t size_hint(IPHeader & base_hdr, IPFragData* = nullptr);
   static Result<IPv6Header, ErrorType>
   construct(StructWriter cur, IPHeader &base_hdr, IPFragData* = nullptr);
 
-  static Result<size_t, ErrorType> size_hint(IPProto, IPRAOption* = nullptr);
+  static size_t size_hint(IPProto, IPRAOption* = nullptr);
   static Result<IPv6Header, ErrorType>
   construct(StructWriter cur, IPProto proto, IPRAOption* = nullptr);
 

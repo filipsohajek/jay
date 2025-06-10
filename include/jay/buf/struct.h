@@ -2,6 +2,7 @@
 #include "jay/buf/struct_writer.h"
 #include "jay/util/result.h"
 #include <cstddef>
+#include <iostream>
 #include <limits>
 
 namespace jay {
@@ -15,24 +16,34 @@ enum class BufError { OUT_OF_BOUNDS, NO_SIZE_HINT };
 template <typename Ts, typename Terr = BufError> class BufStruct {
 public:
   using ErrorType = Terr;
-  BufStruct() = delete;
+  BufStruct() : cur(StructWriter({})) {};
   BufStruct(const BufStruct &) = default;
   BufStruct &operator=(const BufStruct &) = default;
   BufStruct(BufStruct &&) = default;
   BufStruct &operator=(BufStruct &&) = default;
 
   static Result<Ts, Terr> read(StructWriter cur) {
-    auto strct = Ts{cur};
+    size_t size = Ts::size_hint();
+    if (size > cur.size())
+      return ResultError<Terr>{Terr::OUT_OF_BOUNDS};
+    Ts strct = Ts{cur};
     if (strct.size() > cur.size())
       return ResultError<Terr>{Terr::OUT_OF_BOUNDS};
-    cur = cur.span().subspan(0, strct.size());
-    strct.cur = cur;
+    strct.cur = cur.span().subspan(0, strct.size());
     return strct;
   }
-  static Result<Ts, Terr> construct(StructWriter cur) { return read(cur); }
 
-  static Result<size_t, Terr> size_hint() {
-    return ResultError(Terr::NO_SIZE_HINT);
+  static Result<Ts, Terr> construct(StructWriter cur) {
+    Ts strct = Ts{cur};
+    auto size = Ts::size_hint();
+    if (size > cur.size())
+      return ResultError<Terr>{Terr::OUT_OF_BOUNDS};
+    strct.cur = cur.span().subspan(0, size);
+    return strct; 
+  }
+
+  static size_t size_hint() {
+    return std::numeric_limits<size_t>::max();
   }
 
   StructWriter cursor() const { return cur; }
@@ -134,7 +145,7 @@ struct TaggedUnionField {
     std::variant<std::monostate, Ts...> out;
     (
         [&]() {
-          if constexpr (requires {TagAccessor<Ts>::TAG;})
+          if constexpr (requires { TagAccessor<Ts>::TAG; })
             if (DiscType(disc) == TagAccessor<Ts>::TAG)
               out = Ts::read(cur).value();
         }(),
@@ -230,6 +241,8 @@ struct VarArrayField {
     using value_type = Field<Ti>;
     using difference_type = void;
 
+    struct EndSentinel {};
+
     explicit Iterator(StructWriter cur) : cur(cur), base_cur(cur) {
       end = is_end();
     }
@@ -250,12 +263,10 @@ struct VarArrayField {
       return iter;
     }
 
-    bool operator==(const Iterator &other) const {
-      return (base_cur == other.base_cur) && (end == other.end);
+    bool operator==(const EndSentinel &) const {
+      return end;
     }
 
-  private:
-    bool is_end() const { return cur_size() > cur.span().size(); }
     size_t cur_size() const {
       if constexpr (IsBufReadable<Ti>) {
         return sizeof(Ti);
@@ -265,15 +276,26 @@ struct VarArrayField {
             .value_or(std::numeric_limits<size_t>::max());
       }
     }
+  private:
+    bool is_end() const { return (cur_size() == 0) || (cur_size() > cur.span().size()); }
+
     bool end = false;
     StructWriter cur;
     StructWriter base_cur;
   };
 
-  Iterator begin() const { return Iterator{cur}; }
+  Iterator begin() const { return Iterator(cur); }
 
-  Iterator end() const {
-    return Iterator{{cur.span().subspan(cur.span().size())}};
+  Iterator::EndSentinel end() const {
+    return {};
+  }
+
+  size_t size() const {
+    size_t total_size = 0;
+    for (auto it = begin(); it != end(); it++) {
+      total_size += it.cur_size();
+    }
+    return total_size;
   }
   StructWriter cur;
 };

@@ -67,7 +67,7 @@ struct IPHeader : public std::variant<IPv4Header, IPv6Header>, JointStruct {
   }
 
   template<typename... CArgT>
-  static Result<size_t, IPHeaderError> size_hint(IPVersion ver, CArgT&& ...args) {
+  static size_t size_hint(IPVersion ver, CArgT&& ...args) {
     switch (ver) {
       case IPVersion::V4:
         return IPv4Header::size_hint(std::forward<CArgT>(args)...);

@@ -5,6 +5,7 @@
 #include "jay/ip/hdr_error.h"
 #include "jay/ip/icmp_msg.h"
 #include "jay/ip/mld.h"
+#include "jay/ip/ndp.h"
 
 namespace jay::ip {
 struct ICMPv4HeaderTag {};
@@ -32,13 +33,15 @@ private:
   STRUCT_FIELD(type, 0, uint8_t);
   STRUCT_FIELD(_code, 1, uint8_t);
   template <template <typename> typename Accessor> auto message_field() const {
-    return TaggedUnionField<decltype(type()), Accessor, 
-                            ICMPEchoRequestMessage,
-                            ICMPEchoReplyMessage,
-                            ICMPTimeExceededMessage,
-                            ICMPDestinationUnreachableMessage, MLDQuery, MLDReport, MLDDone>{cur.span().subspan(4),
-                                                  type()};
+    return TaggedUnionField<decltype(type()), Accessor, ICMPEchoRequestMessage,
+                            ICMPEchoReplyMessage, ICMPTimeExceededMessage,
+                            ICMPDestinationUnreachableMessage, MLDQuery,
+                            MLDReport, MLDDone, NDPRouterSolicitation,
+                            NDPRouterAdvertisement, NDPNeighborSolicitation,
+                            NDPNeighborAdvertisement>{cur.span().subspan(4),
+                                                      type()};
   }
+
 public:
   auto message() {
     if (std::holds_alternative<ICMPv4HeaderTag>(*this)) {
@@ -48,34 +51,46 @@ public:
     }
   }
 
-  ICMPCode code() const {
-    return {_code(), ver()};
+  ICMPCode code() const { return {_code(), ver()}; }
+
+  template <typename TMsg, typename TCode = uint8_t, typename... CArgT>
+  static size_t size_hint(IPVersion, TMsg &, TCode = 0,
+                          CArgT &&...constr_args) {
+    return 4 + TMsg::size_hint(std::forward<CArgT>(constr_args)...);
   }
 
-  template <typename TMsg, typename TCode = uint8_t> static size_t size_hint(IPVersion, TMsg &, TCode = 0) {
-    return 4 + TMsg::size_hint();
+  static Result<ICMPHeader, ICMPHeaderError> read(StructWriter cur,
+                                                  IPVersion ver) {
+    if (cur.size() < 4)
+      return ResultError(ICMPHeaderError::OUT_OF_BOUNDS);
+    ICMPHeader hdr(ver, cur);
+    if (cur.size() < hdr.size())
+      return ResultError(ICMPHeaderError::OUT_OF_BOUNDS);
+
+    return hdr;
   }
 
-  static Result<ICMPHeader, ICMPHeaderError> read(StructWriter cur, IPVersion) {
-    return BufStruct<ICMPHeader>::read(cur);
-  }
+  static size_t size_hint() { return 4; }
 
-  template <typename TMsg, typename TCode = uint8_t>
+  template <typename TMsg, typename TCode = uint8_t, typename... CArgT>
   static Result<ICMPHeader, ICMPHeaderError>
-  construct(StructWriter cur, IPVersion ver, TMsg &message, TCode code = 0) {
+  construct(StructWriter cur, IPVersion ver, TMsg &message, TCode code = 0,
+            CArgT &&...constr_args) {
     ICMPHeader hdr(ver, cur);
     if (cur.size() < 4)
       return ResultError(ICMPHeaderError::OUT_OF_BOUNDS);
     cur.slice(0, 4).reset();
     hdr._code() = ICMPCode(code, ver).code;
     if (ver == IPVersion::V4) {
-      auto msg_res = hdr.message_field<ICMPv4TypeAccessor>().set<TMsg>();
+      auto msg_res = hdr.message_field<ICMPv4TypeAccessor>().set<TMsg>(
+          std::forward<CArgT>(constr_args)...);
       if (msg_res.has_value())
         message = msg_res.value();
       else
         return ResultError(msg_res.error());
     } else {
-      auto msg_res = hdr.message_field<ICMPv6TypeAccessor>().set<TMsg>();
+      auto msg_res = hdr.message_field<ICMPv6TypeAccessor>().set<TMsg>(
+          std::forward<CArgT>(constr_args)...);
       if (msg_res.has_value())
         message = msg_res.value();
       else
@@ -94,18 +109,23 @@ public:
 
   bool is_v4() const { return std::holds_alternative<ICMPv4HeaderTag>(*this); }
   bool is_v6() const { return std::holds_alternative<ICMPv6HeaderTag>(*this); }
-  IPVersion ver() const { return std::holds_alternative<ICMPv4HeaderTag>(*this) ? IPVersion::V4 : IPVersion::V6; }
+  IPVersion ver() const {
+    return std::holds_alternative<ICMPv4HeaderTag>(*this) ? IPVersion::V4
+                                                          : IPVersion::V6;
+  }
 
   friend std::ostream &operator<<(std::ostream &os, ICMPHeader &addr) {
     os << "ICMP: version=" << (addr.is_v4() ? 4 : 6) << ", message=";
-    std::visit([&](auto msg) {
-      if constexpr (std::is_same_v<decltype(msg), std::monostate>) {
-        os << "unknown";
-      } else {
-        os << msg; 
-      }
-    }, addr.message());
-    
+    std::visit(
+        [&](auto msg) {
+          if constexpr (std::is_same_v<decltype(msg), std::monostate>) {
+            os << "unknown";
+          } else {
+            os << msg;
+          }
+        },
+        addr.message());
+
     return os;
   }
 };

@@ -17,6 +17,7 @@ namespace jay::ip {
 class IPStack : WithTimers {
 public:
   clock::duration reassembly_timeout = std::chrono::seconds{10};
+  clock::duration dad_timeout = std::chrono::seconds{3};
   explicit IPStack(Stack &stack)
       : stack(stack), _sock_table(std::bind(&IPStack::select_src_addr, this,
                                             std::placeholders::_1, nullptr)) {}
@@ -49,7 +50,6 @@ private:
   void igmp_deliver(PBuf);
   void icmp_notify_unreachable(PBuf, UnreachableReason);
 
-
   void igmp_send_report(IGMPMessageType, Interface*, IPv4Addr);
   void mld_send_report(Interface*, IPAddr, bool leave);
 
@@ -61,13 +61,15 @@ private:
                      std::optional<IPAddr> siaddr_hint);
   void reassemble_single(PBuf, IPFragData);
 
-  enum AddrScope {
+  enum class AddrScope {
     LINK,
     GLOBAL
   };
   struct AddrState {
     uint8_t prefix_len = 0;
     AddrScope scope;
+    std::unique_ptr<Timer> dad_timer = nullptr;
+    bool tentative = false;
     Interface *iface = nullptr;
   };
   BitTrie<IPAddr, AddrState> ips;

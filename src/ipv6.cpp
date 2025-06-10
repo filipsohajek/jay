@@ -18,14 +18,14 @@ Result<IPv6Header, IPv6Header::ErrorType> IPv6Header::read(StructWriter cur) {
   return hdr;
 }
 
-Result<size_t, IPv6Header::ErrorType>
+size_t
 IPv6Header::size_hint(size_t exthdr_size) {
   return MIN_SIZE + exthdr_size;
 }
 
 Result<IPv6Header, IPv6Header::ErrorType>
 IPv6Header::construct(StructWriter cur, size_t exthdr_size) {
-  size_t total_size = size_hint(exthdr_size).value();
+  size_t total_size = size_hint(exthdr_size);
   cur = cur.span().subspan(0, total_size);
   IPv6Header hdr{cur};
   if (cur.size() != total_size)
@@ -36,7 +36,7 @@ IPv6Header::construct(StructWriter cur, size_t exthdr_size) {
   return hdr;
 }
 
-Result<size_t, IPv6Header::ErrorType>
+size_t
 IPv6Header::size_hint(IPHeader &, IPFragData *frag_data) {
   return MIN_SIZE + (frag_data ? IPv6FragData::size_hint() : 0);
 }
@@ -44,7 +44,7 @@ IPv6Header::size_hint(IPHeader &, IPFragData *frag_data) {
 Result<IPv6Header, IPv6Header::ErrorType>
 IPv6Header::construct(StructWriter cur, IPHeader &base_hdr,
                       IPFragData *frag_data) {
-  if (cur.size() < size_hint(base_hdr, frag_data).value())
+  if (cur.size() < size_hint(base_hdr, frag_data))
     return ResultError(IPHeaderError::OUT_OF_BOUNDS);
   if (!base_hdr.is_v6())
     return ResultError(IPHeaderError::BAD_VERSION);
@@ -72,7 +72,7 @@ IPv6Header::construct(StructWriter cur, IPHeader &base_hdr,
   return hdr;
 }
 
-Result<size_t, IPv6Header::ErrorType>
+size_t
 IPv6Header::size_hint(IPProto, IPRAOption *ra_opt) {
   return MIN_SIZE + (ra_opt ? 8 : 0);
 }

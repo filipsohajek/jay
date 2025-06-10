@@ -16,13 +16,13 @@ Result<IPv4Header, IPv4Header::ErrorType> IPv4Header::read(StructWriter cur) {
   return hdr;
 }
 
-Result<size_t, IPv4Header::ErrorType> IPv4Header::size_hint(size_t opts_size) {
+size_t IPv4Header::size_hint(size_t opts_size) {
   return MIN_SIZE + opts_size;
 }
 
 Result<IPv4Header, IPv4Header::ErrorType>
 IPv4Header::construct(StructWriter cur, size_t opts_size) {
-  size_t total_size = size_hint(opts_size).value();
+  size_t total_size = size_hint(opts_size);
   cur = cur.span().subspan(0, total_size);
   IPv4Header hdr{cur};
   if (cur.size() != total_size)
@@ -33,7 +33,7 @@ IPv4Header::construct(StructWriter cur, size_t opts_size) {
   return hdr;
 }
 
-Result<size_t, IPv4Header::ErrorType> IPv4Header::size_hint(IPHeader &,
+size_t IPv4Header::size_hint(IPHeader &,
                                                             IPFragData *) {
   return MIN_SIZE;
 }
@@ -41,7 +41,7 @@ Result<size_t, IPv4Header::ErrorType> IPv4Header::size_hint(IPHeader &,
 Result<IPv4Header, IPv4Header::ErrorType>
 IPv4Header::construct(StructWriter cur, IPHeader &base_hdr,
                       IPFragData *frag_data) {
-  if (cur.size() < size_hint(base_hdr, frag_data).value())
+  if (cur.size() < size_hint(base_hdr, frag_data))
     return ResultError(IPHeaderError::OUT_OF_BOUNDS);
   if (!base_hdr.is_v4())
     return ResultError(IPHeaderError::BAD_VERSION);
@@ -59,7 +59,7 @@ IPv4Header::construct(StructWriter cur, IPHeader &base_hdr,
   return hdr;
 }
 
-Result<size_t, IPv4Header::ErrorType>
+size_t
 IPv4Header::size_hint(IPProto, IPRAOption *ra_opt) {
   return MIN_SIZE + (ra_opt ? 4 : 0);
 }

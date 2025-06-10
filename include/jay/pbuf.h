@@ -5,6 +5,7 @@
 #include "jay/ip/icmp_hdr.h"
 #include "jay/ip/igmp.h"
 #include "jay/ip/ip_hdr.h"
+#include "jay/ip/opts.h"
 #include "jay/ip/v4.h"
 #include "jay/udp/udp_hdr.h"
 #include <cassert>
@@ -25,13 +26,11 @@ struct NoHdr : public std::monostate, public BufStruct<NoHdr> {
 #define _CONSTRUCT_HDR_FN(name)  template<typename THdr, typename ...CArgT>\
   requires IsVariantAlternative<THdr, decltype(name)>::value\
   Result<THdr, typename THdr::ErrorType> construct_ ## name (CArgT&& ...constr_args) {\
-    Result<size_t, typename THdr::ErrorType> size_hint = THdr::size_hint(std::forward<CArgT>(constr_args)...);\
-    if (size_hint.has_error())\
-      return ResultError(size_hint.error());\
-    unmask(size_hint.value());\
-    StructWriter writer(begin().contiguous().subspan(0, size_hint.value()));\
+    size_t size_hint = THdr::size_hint(std::forward<CArgT>(constr_args)...);\
+    unmask(size_hint);\
+    StructWriter writer(begin().contiguous().subspan(0, size_hint));\
     auto hdr_res = THdr::construct(writer, std::forward<CArgT>(constr_args)...);\
-    mask(size_hint.value());\
+    mask(size_hint);\
     if (hdr_res.has_value())\
       name = hdr_res.value();\
     return hdr_res;\
@@ -152,7 +151,7 @@ public:
   PBuf(T&&... args) : std::unique_ptr<PBufStruct>(std::make_unique<PBufStruct>(std::forward<T>(args)...)) {}
   
   template<typename TMsg, typename TCode = uint8_t>
-  static PBuf icmp_for(ip::IPAddr dst_addr, TMsg* msg = nullptr, TCode code = 0, Buf* payload = nullptr, std::optional<ip::IPAddr> src_addr = std::nullopt) {
+  static PBuf icmp_for(ip::IPAddr dst_addr, TMsg* msg = nullptr, TCode code = 0, Buf* payload = nullptr, std::optional<uint16_t> router_alert = std::nullopt) {
     PBuf packet;
     packet->reserve_headers();
     if (payload) {
@@ -164,10 +163,16 @@ public:
     packet->unmask(icmp_hdr.size());
 
     ip::IPVersion ip_ver = dst_addr.version();
-    auto ip_hdr = packet->construct_net_hdr<ip::IPHeader>(ip_ver, (ip_ver == ip::IPVersion::V4) ? ip::IPProto::ICMP : ip::IPProto::ICMPv6).value();
+    ip::IPHeader ip_hdr;
+    ip::IPProto proto = (ip_ver == ip::IPVersion::V4) ? ip::IPProto::ICMP : ip::IPProto::ICMPv6;
+    if (router_alert.has_value()) {
+      ip::IPRAOption ra_opt;
+      ip_hdr = packet->construct_net_hdr<ip::IPHeader>(ip_ver, proto, &ra_opt).value();
+      ra_opt.value() = router_alert.value(); 
+    } else {
+      ip_hdr = packet->construct_net_hdr<ip::IPHeader>(ip_ver, proto).value();
+    }
     ip_hdr.dst_addr() = dst_addr;
-    if (src_addr.has_value())
-      ip_hdr.src_addr() = src_addr.value();
     
     return packet;
   }

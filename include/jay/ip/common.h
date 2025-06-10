@@ -89,7 +89,11 @@ struct IPAddr : public std::array<uint8_t, 16> {
   }
 
   static IPAddr unicast_ll(std::array<uint8_t, 8> ident) {
-    return {0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, ident[0], ident[1], ident[2], ident[3], ident[4], ident[5], ident[6]};
+    return {0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, ident[0], ident[1], ident[2], ident[3], ident[4], ident[5], ident[6], ident[7]};
+  }
+
+  static IPAddr solicited_node(IPAddr sol_addr) {
+    return {0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xff, sol_addr[13], sol_addr[14], sol_addr[15]};
   }
 
   static IPAddr any() {
@@ -123,7 +127,11 @@ struct IPAddr : public std::array<uint8_t, 16> {
     return (*this) == IPAddr{};
   }
 
-  bool is_local() const {
+  bool is_link_local() const {
+    return (*this) == IPAddr {0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, (*this)[8], (*this)[9], (*this)[10], (*this)[11], (*this)[12], (*this)[13], (*this)[14], (*this)[15]};
+  }
+
+  bool is_loopback() const {
     return (*this == IPAddr::loopback()) || (is_v4() && v4().is_local());
   }
 

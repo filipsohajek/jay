@@ -19,6 +19,9 @@ void Stack::input(Interface *iface, PBuf packet) {
   case EtherType::IPV4:
     ip.ip_input(std::move(packet), ip::IPVersion::V4);
     break;
+  case EtherType::IPV6:
+    ip.ip_input(std::move(packet), ip::IPVersion::V6);
+    break;
   }
 }
 

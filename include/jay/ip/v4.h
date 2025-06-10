@@ -16,6 +16,10 @@ struct IPv4FragData : public BufStruct<IPv4FragData> {
   size_t size() const {
     return 4;
   }
+
+  static size_t size_hint() {
+    return 4;
+  }
 };
 
 struct IPv4RAOption : public BufStruct<IPv4RAOption> {
@@ -28,12 +32,9 @@ struct IPv4RAOption : public BufStruct<IPv4RAOption> {
   size_t size() const {
     return 2;
   }
-};
 
-struct IPv4UnknownOption : public BufStruct<IPv4UnknownOption> {
-  using BufStruct::BufStruct;
-  size_t size() const {
-    return 0;
+  static size_t size_hint() {
+    return 2;
   }
 };
 
@@ -64,12 +65,12 @@ struct IPv4Option : public BufStruct<IPv4Option> {
     return strct;
   }
 
-
   size_t size() const {
-    auto opt_opt = option().variant();
-    if (std::holds_alternative<std::monostate>(opt_opt))
-      return 2;
     return 2 + option().size();
+  }
+
+  static size_t size_hint() {
+    return 2;
   }
 };
 
@@ -98,9 +99,9 @@ public:
   using ErrorType = IPHeaderError;
 
   static Result<IPv4Header, ErrorType> read(StructWriter cur);
-  static Result<size_t, ErrorType> size_hint(size_t opts_size);
-  static Result<size_t, ErrorType> size_hint(IPHeader& base_hdr, IPFragData* = nullptr);
-  static Result<size_t, ErrorType> size_hint(IPProto, IPRAOption* = nullptr);
+  static size_t size_hint(size_t opts_size);
+  static size_t size_hint(IPHeader& base_hdr, IPFragData* = nullptr);
+  static size_t size_hint(IPProto, IPRAOption* = nullptr);
   static Result<IPv4Header, ErrorType> construct(StructWriter cur, size_t opts_size);
   static Result<IPv4Header, ErrorType> construct(StructWriter cur, IPHeader& base_hdr, IPFragData* = nullptr);
   static Result<IPv4Header, ErrorType> construct(StructWriter cur, IPProto, IPRAOption* = nullptr);

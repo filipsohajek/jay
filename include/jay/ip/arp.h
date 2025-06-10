@@ -33,7 +33,7 @@ struct ARPHeader : public BufStruct<ARPHeader> {
 
   size_t size() const { return SIZE; }
 
-  static Result<size_t, ErrorType> size_hint() {
+  static size_t size_hint() {
     return 28;
   }
 
