@@ -56,7 +56,7 @@ public:
   ///
   /// May make unaligned writes.
   template <IsTriviallySerializable T>
-  void write(size_t offset, T data, bool network = true) const {
+  void write(size_t offset, T data, bool network = true) {
     if (network ^ NATIVE_IS_NETWORK) {
       data = swap_byteorder(data);
     }
@@ -78,14 +78,14 @@ public:
   /// Write an array (element by element) of (trivially serializable) values at
   /// the offset. See the respective `write` specialization.
   template <IsFundamentalArrayLike T>
-  void write(size_t offset, T data, bool network = true) const {
+  void write(size_t offset, T data, bool network = true) {
     using Tval = RemoveExtent_t<T>;
     for (size_t i = 0; i < sizeof(T) / sizeof(Tval); i++) {
       write<Tval>(offset + i * sizeof(Tval), data[i], network);
     }
   }
 
-  auto span() const { return buffer; }
+  std::span<uint8_t> span() const { return buffer; }
   size_t size() const { return buffer.size(); }
   StructWriter slice(size_t offset, size_t size = std::dynamic_extent) const {
     return {buffer.subspan(offset, size)};

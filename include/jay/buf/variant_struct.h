@@ -20,7 +20,7 @@ struct JointStruct {
     operator Tr() const {
       return convert(std::make_index_sequence<sizeof...(FieldTs)>());
     }
-    template <size_t... I> void operator=(const Tr &var) const {
+    template <size_t... I> void operator=(const Tr &var) {
       assign(var, std::make_index_sequence<sizeof...(FieldTs)>());
     }
 
@@ -39,7 +39,7 @@ struct JointStruct {
     }
 
     template <size_t... I>
-    void assign(const Tr &var, std::index_sequence<I...>) const {
+    void assign(const Tr &var, std::index_sequence<I...>) {
       (
           [&]() {
             if (field_var.index() == I)

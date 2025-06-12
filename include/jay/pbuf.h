@@ -100,7 +100,7 @@ public:
     return *this;
   }
 
-  Result<Buf::Iterator, Buf::InsertError> insert(PBufStruct& other, size_t offset, size_t length = std::dynamic_extent) {
+  Result<Buf::iterator, Buf::InsertError> insert(PBufStruct& other, size_t offset, size_t length = std::dynamic_extent) {
     return Buf::insert(other, offset, length);
   }
   

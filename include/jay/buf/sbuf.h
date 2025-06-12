@@ -45,6 +45,8 @@ public:
 
   uint8_t *begin() { return data.get() + offset; }
   uint8_t *end() { return data.get() + _size; }
+  const uint8_t *begin() const { return data.get() + offset; }
+  const uint8_t *end() const { return data.get() + _size; }
   size_t size() const { return _size; }
 
   bool is_empty() const { return data == nullptr; }
@@ -86,13 +88,37 @@ class Buf {
   static const size_t SMALL_CHUNK_COUNT = 4;
 
 public:
+  template<typename Ti>
   struct Iterator {
-    using value_type = uint8_t;
+    using value_type = Ti;
     using iterator_category = std::bidirectional_iterator_tag;
     using difference_type = ssize_t;
     using pointer = uint8_t *;
     using reference = uint8_t &;
 
+  private:
+    using ChunkVecType = SmallVec<BufChunk, SMALL_CHUNK_COUNT>;
+    using ChunkItType = std::conditional_t<std::is_const_v<Ti>, ChunkVecType::const_iterator, ChunkVecType::iterator>;
+  public:
+    Iterator() = default;
+    Iterator(ChunkItType chunk_it, size_t chunk_off) : chunk_off(chunk_off), chunk_it(chunk_it) {}
+    template<typename To>
+    Iterator(const Iterator<To>& other) : chunk_off(other.chunk_off), chunk_it(other.chunk_it) {}
+    template<typename To>
+    Iterator(Iterator<To>&& other) : chunk_it(other.chunk_it), chunk_off(other.chunk_off) {}
+    template<typename To>
+    Iterator<Ti>& operator=(const Iterator<To>& other) {
+      chunk_it = other.chunk_it;
+      chunk_off = other.chunk_off;
+      return *this;
+    }
+    template<typename To>
+    Iterator<Ti>& operator=(Iterator<To>&& other) {
+      chunk_it = other.chunk_it;
+      chunk_off = other.chunk_off;
+      return *this;
+    }
+    
     value_type &operator*() const {
       auto &chunk = *chunk_it;
       return *(chunk.begin() + chunk_off);
@@ -131,7 +157,7 @@ public:
       return iter;
     }
 
-    Iterator operator+(size_t shift) {
+    Iterator operator+(size_t shift) const {
       Iterator it = *this;
       it += shift;
       return it;
@@ -147,7 +173,7 @@ public:
       return *this;
     }
 
-    Iterator operator-(size_t shift) {
+    Iterator operator-(size_t shift) const {
       Iterator it = *this;
       it -= shift;
       return it;
@@ -164,32 +190,38 @@ public:
       return *this;
     }
 
-    Iterator next_chunk() { return {.chunk_off = 0, .chunk_it = chunk_it + 1}; }
-    Iterator prev_chunk() { return {.chunk_off = 0, .chunk_it = chunk_it - 1}; }
+    Iterator next_chunk() const { return {chunk_it + 1, 0}; }
+    Iterator prev_chunk() const { return {chunk_it - 1, 0}; }
     size_t chunk_offset() const { return chunk_off; }
+    const BufChunk &chunk() const { return *chunk_it; }
     BufChunk &chunk() { return *chunk_it; }
-    BufChunk sliced_chunk() { return (*chunk_it).slice(chunk_off); }
-    bool is_hole() { return (*chunk_it).is_empty(); }
-    std::span<uint8_t> contiguous() {
+    BufChunk sliced_chunk() const { return (*chunk_it).slice(chunk_off); }
+    bool is_hole() const { return (*chunk_it).is_empty(); }
+    std::span<uint8_t> contiguous() const {
       auto chunk = sliced_chunk();
       return chunk;
     }
 
-    bool operator==(const Iterator &other) const {
+    template<typename To>
+    bool operator==(const Iterator<To> &other) const {
       return (chunk_off == other.chunk_off) && (chunk_it == other.chunk_it);
     }
 
     size_t chunk_off;
-    SmallVec<BufChunk, SMALL_CHUNK_COUNT>::Iterator chunk_it;
+
+  public:
+    ChunkItType chunk_it;
   };
 
+  using iterator = Iterator<uint8_t>;
+  using const_iterator = Iterator<const uint8_t>;
 private:
   SmallVec<BufChunk, SMALL_CHUNK_COUNT> chunks;
 
   // we technically only need the mask_off, but it could get expensive to
   // compute these on every call
   size_t _size = 0;
-  Iterator masked_start;
+  iterator masked_start;
   size_t mask_off = 0;
   size_t n_holes = 0;
 
@@ -197,9 +229,8 @@ public:
   template <class Alloc = std::pmr::polymorphic_allocator<std::byte>>
   explicit Buf(size_t size,
                const Alloc &alloc = std::pmr::polymorphic_allocator())
-      : _size(size) {
+      : _size(size), masked_start(begin(false)) {
     chunks.emplace_back(size, alloc);
-    masked_start = begin(false);
   }
   explicit Buf(BufChunk chunk) : chunks({chunk}), masked_start(begin(false)) {}
   Buf() : chunks({}), masked_start(begin(false)) {};
@@ -210,9 +241,7 @@ public:
   Buf &operator=(const Buf &other) {
     chunks = other.chunks;
     _size = other._size;
-    masked_start = {.chunk_off = other.masked_start.chunk_off,
-                    .chunk_it =
-                        chunks.begin() + other.masked_start.chunk_it.idx};
+    masked_start = iterator {chunks.begin() + other.masked_start.chunk_it.idx, other.masked_start.chunk_off};
     mask_off = other.mask_off;
     n_holes = other.n_holes;
     return *this;
@@ -221,9 +250,7 @@ public:
   Buf &operator=(Buf &&other) {
     chunks = std::move(other.chunks);
     _size = other._size;
-    masked_start = {.chunk_off = other.masked_start.chunk_off,
-                    .chunk_it =
-                        chunks.begin() + other.masked_start.chunk_it.idx};
+    masked_start = iterator {chunks.begin() + other.masked_start.chunk_it.idx, other.masked_start.chunk_off};
     mask_off = other.mask_off;
     n_holes = other.n_holes;
     return *this;
@@ -239,7 +266,7 @@ public:
       return; // the current chunk is sufficient
 
     size_t erased_size;
-    Iterator insert_pos;
+    iterator insert_pos;
     if (mask_off >= res_size) {
       auto erase_start = masked_start - res_size;
       erased_size = res_size;
@@ -294,7 +321,7 @@ public:
   /// [InsertError::OVERLAPPING_LEFT] is returned. If the length of the hole is
   /// less than the length of the inserted chunk,
   /// [InsertError::OVERLAPPING_RIGHT] is returned.
-  Result<Iterator, InsertError> insert_chunk(const BufChunk &chunk,
+  Result<iterator, InsertError> insert_chunk(const BufChunk &chunk,
                                              size_t offset) {
     if (offset >= size()) {
       // we expect to find a hole at the offset, so create one if we are
@@ -349,7 +376,7 @@ public:
   ///
   /// Only the unmasked part of `other_buf` is inserted. The insertion is
   /// performed by repeatedly calling [insert_chunk].
-  Result<Iterator, InsertError> insert(Buf &other_buf, size_t offset,
+  Result<iterator, InsertError> insert(Buf &other_buf, size_t offset,
                                        size_t length = std::dynamic_extent) {
     auto chunk_it = other_buf.begin();
     size_t inserted_size = offset;
@@ -375,21 +402,33 @@ public:
     return result_it;
   }
 
-  Iterator begin(bool masked = true) {
+  iterator begin(bool masked = true) {
     if (masked)
       return masked_start;
     else
-      return {.chunk_off = 0, .chunk_it = chunks.begin()};
+      return {chunks.begin(), 0};
   }
-  Iterator end() { return Iterator{.chunk_off = 0, .chunk_it = chunks.end()}; }
+  iterator end() {
+    return {chunks.end(), 0};
+  }
 
-  bool is_contiguous() { return chunks.size() == 1; }
-  bool is_complete() { return n_holes == 0; }
+  const_iterator begin(bool masked = true) const {
+    if (masked)
+      return masked_start;
+    else
+      return {chunks.begin(), 0};
+  }
+  const_iterator end() const { 
+    return {chunks.end(), 0};
+  }
+
+  bool is_contiguous() const { return chunks.size() == 1; }
+  bool is_complete() const { return n_holes == 0; }
 
   /// Create a contiguous (single-chunk) version of the unmasked part of the
   /// buffer. May allocate a new contiguous backing [BufChunk]. Does not
   /// guarantee to keep the masked part of the buffer.
-  Buf as_contiguous() {
+  Buf as_contiguous() const {
     if (is_contiguous())
       return *this;
     Buf contig_buf(size());

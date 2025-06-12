@@ -76,7 +76,7 @@ template <typename T, bool NBO = true> struct Field {
   Field &operator=(const Field &) = delete;
   Field &operator=(Field &&) = delete;
 
-  void operator=(const T &data) const
+  void operator=(const T &data)
     requires IsBufWriteable<T> 
   {
     cur.write<T>(0, data, NBO);
@@ -84,7 +84,7 @@ template <typename T, bool NBO = true> struct Field {
 
   template<typename Ta>
   requires std::is_assignable_v<T, Ta>
-  void operator=(const Ta& data) const {
+  void operator=(const Ta& data) {
     T value = T(*this);
     value = data;
     *this = value;
@@ -99,7 +99,7 @@ template <typename T, bool NBO = true> struct Field {
   T value() const { return *this; }
 
   template <typename... RArgT>
-  auto read(RArgT &&...args)
+  auto read(RArgT &&...args) const
     requires IsBufStruct<T>
   {
     return T::read(cur, std::forward<RArgT>(args)...);
@@ -112,7 +112,7 @@ template <typename T, bool NBO = true> struct Field {
     return T::construct(cur, std::forward<CArgT>(args)...);
   }
 
-  bool operator==(const Field<T> &rhs) { return T(rhs) == *this; }
+  bool operator==(const Field<T> &rhs) const { return T(rhs) == *this; }
 
   StructWriter cur;
 };
@@ -208,7 +208,7 @@ private:
 
 public:
   using Type = Tr;
-  void operator=(const Tr &data) const {
+  void operator=(const Tr &data) {
     DeserType masked_data =
         MASK & (static_cast<DeserType>(data / Mult) << SHIFT_LEN);
     DeserType prev_value = cur.read<DeserType>(START_OFFSET, true);
@@ -225,7 +225,7 @@ public:
     return *this;
   }
 
-  bool operator==(const BitField<Tr, Offset, Length> &rhs) {
+  bool operator==(const BitField<Tr, Offset, Length> &rhs) const {
     return Tr(rhs) == *this;
   }
 
@@ -301,10 +301,10 @@ struct VarArrayField {
 };
 
 #define STRUCT_FIELD(name, offset, type)                                       \
-  ::jay::Field<type> name() const { return {{cur.span().subspan(offset)}}; }
+  ::jay::Field<type> name() const { return {cur.slice(offset)}; }
 #define STRUCT_FIELD_LE(name, offset, type)                                    \
   ::jay::Field<type, false> name() const {                                     \
-    return {{cur.span().subspan(offset)}};                                     \
+    return {cur.slice(offset)};                                     \
   }
 #define STRUCT_BITFIELD(name, offset, length, rtype)                           \
   ::jay::BitField<rtype, offset, length> name() const { return {cur}; }
@@ -312,12 +312,12 @@ struct VarArrayField {
   ::jay::BitField<rtype, offset, length, mult> name() const { return {cur}; }
 #define STRUCT_VARARRAY(name, offset, type)                                    \
   ::jay::VarArrayField<type> name() const {                                    \
-    return {cur.span().subspan(offset)};                                       \
+    return {cur.slice(offset)};                                       \
   }
 #define STRUCT_TAGGED_UNION_ACCESSOR(name, offset, field, accessor, ...)       \
   auto name() const {                                                          \
     return ::jay::TaggedUnionField<decltype(field), accessor, __VA_ARGS__>{    \
-        cur.span().subspan(offset), field};                                    \
+        cur.slice(offset), field};                                    \
   }
 #define STRUCT_TAGGED_UNION(name, offset, field, ...)                          \
   STRUCT_TAGGED_UNION_ACCESSOR(name, offset, field, ::jay::DefaultTagAccessor, \
