@@ -21,7 +21,7 @@ void IPStack::ip_input(PBuf packet, IPVersion version) {
         dst_addr.is_v4() &&
         (dst_addr.is_broadcast() ||
          dst_addr.is_directed_broadcast(local_ip_state->prefix_len));
-    if (!broadcast && !dst_addr.is_multicast()) {
+    if (!broadcast && !dst_addr.is_multicast() && !dst_addr.is_any()) {
       ip_forward(std::move(packet));
       return;
     }
@@ -224,6 +224,9 @@ void IPStack::icmp_deliver_msg(PBuf packet, NDPNeighborSolicitation msg) {
   }
 
   NDPNeighborAdvertisement adv_msg;
+  bool src_is_unspecified = IPAddr(packet->ip().src_addr()).is_any();
+  if (src_is_unspecified && src_haddr.has_value())
+    return;
   PBuf reply_packet;
   reply_packet->reserve_headers();
   ICMPHeader icmp_hdr =
@@ -231,14 +234,17 @@ void IPStack::icmp_deliver_msg(PBuf packet, NDPNeighborSolicitation msg) {
           ->construct_tspt_hdr<ICMPHeader>(IPVersion::V6, adv_msg, 0,
                                            packet->iface->addr())
           .value();
-  adv_msg.solicited() = true;
+  adv_msg.solicited() = !src_is_unspecified;
   adv_msg.target_addr() = tgt_iaddr;
   reply_packet->unmask(icmp_hdr.size());
 
   IPHeader ip_hdr =
       reply_packet->construct_net_hdr<IPHeader>(IPVersion::V6, IPProto::ICMPv6)
           .value();
-  ip_hdr.dst_addr() = IPAddr(packet->ip().src_addr());
+  if (!src_is_unspecified)
+    ip_hdr.dst_addr() = IPAddr(packet->ip().src_addr());
+  else
+    ip_hdr.dst_addr() = IPAddr::all_nodes();
   ip_hdr.src_addr() = tgt_iaddr;
   ip_hdr.ttl() = 255;
   if (src_haddr.has_value())
@@ -529,7 +535,8 @@ void IPStack::ip_output_final(PBuf packet) {
   }
 
   if (packet->local) {
-    ip_input(std::move(packet), packet->nh_iaddr.value().version());
+    IPVersion version = packet->nh_iaddr.value().version();
+    ip_input(std::move(packet), version);
   } else {
     packet->construct_link_hdr<EthHeader>();
     packet->eth().ether_type() =
@@ -576,9 +583,13 @@ void IPStack::solicit_haddr_v6(Interface *iface, IPAddr tgt_iaddr,
   NDPNeighborSolicitation solicit_msg;
   PBuf solicit_packet;
   solicit_packet->reserve_headers();
+
+  std::optional<HWAddr> source_haddr;
+  if (!siaddr.is_any())
+    source_haddr = iface->addr();
   ICMPHeader icmp_hdr = solicit_packet
                             ->construct_tspt_hdr<ICMPHeader>(
-                                IPVersion::V6, solicit_msg, 0, iface->addr())
+                                IPVersion::V6, solicit_msg, 0, source_haddr)
                             .value();
   solicit_msg.target_addr() = tgt_iaddr;
   solicit_packet->unmask(icmp_hdr.size());

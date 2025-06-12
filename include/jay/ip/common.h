@@ -23,13 +23,13 @@ inline uint16_t inet_csum(std::span<const uint8_t> data, uint32_t init_sum = 0) 
 }
 
 inline uint16_t inet_csum(Buf &buf, uint32_t init_sum = 0) {
-  uint32_t sum = 0;
+  uint32_t sum = init_sum;
   for (auto it = buf.begin(); it != buf.end(); it = it.next_chunk()) {
     std::span<uint16_t> words{
         reinterpret_cast<uint16_t *>(it.contiguous().data()),
         it.contiguous().size() / 2};
     sum += std::accumulate(
-        words.begin(), words.end(), init_sum,
+        words.begin(), words.end(), 0,
         [](uint32_t acc, uint16_t word) { return acc + uint32_t(word); });
   }
   return ~static_cast<uint16_t>((sum & 0xffff) + (sum >> 16));

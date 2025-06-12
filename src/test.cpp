@@ -107,32 +107,41 @@ private:
   uint16_t _mtu;
 };
 
+
 int main() {
   jay::Stack stack;
   auto tap = std::make_shared<TAPInterface>("tap0", jay::HWAddr {0x02, 0xa0, 0x04, 0xd3, 0x00, 0x11}, 1500);
   stack.add_interface(tap);
   stack.ip.router().add_route(jay::ip::IPv4Addr {10, 0, 0, 0}, 24, tap.get(), std::nullopt, jay::ip::IPv4Addr {10, 0, 0, 2});
   stack.ip.assign_ip(tap.get(), jay::ip::IPv4Addr {10, 0, 0, 2}, 24);
-  stack.ip.mcast_join(tap.get(), jay::ip::IPAddr::all_nodes());
-  stack.ip.mcast_join(tap.get(), jay::ip::IPv4Addr {224, 0, 0, 3});
 
-  jay::Buf payload(10000);
-  auto payload_span = payload.begin().contiguous();
-  uint8_t ctr = 0;
-  for (auto it = payload_span.subspan(6).begin(); it < payload_span.end(); it++, ctr++) {
-    *it = ctr;
-  }
-  stack.ip.mcast_leave(tap.get(), jay::ip::IPv4Addr {224, 0, 0, 3});
+  jay::Stack stack2;
+  auto tap2 = std::make_shared<TAPInterface>("tap1", jay::HWAddr {0x02, 0xa0, 0x04, 0xd3, 0x00, 0x12}, 1500);
 
-  auto udp_sock = stack.ip.udp_sock();
-  udp_sock.listen(std::nullopt, 12345);
-  udp_sock.on_data_fn = [](jay::udp::UDPSocket& sock, const jay::Buf& buf, jay::ip::IPAddr addr, uint16_t remote_port) {
+  auto udp_listen = stack.ip.udp_sock();
+  udp_listen.listen(std::nullopt, 12345);
+  udp_listen.on_data_fn = [](jay::udp::UDPSocket& sock, const jay::Buf& buf, jay::ip::IPAddr addr, uint16_t remote_port) {
     std::cout << "socked received " << buf.size() << " bytes from " << addr << ":" << remote_port << "\n";
     sock.send(buf, addr, remote_port);
   };
-  
+
+  stack.poll();
+  std::this_thread::sleep_for(stack.ip.dad_timeout);
+  stack.poll();
+  stack2.add_interface(tap2);
+  stack2.ip.router().add_route(jay::ip::IPv4Addr {10, 0, 0, 0}, 24, tap2.get(), std::nullopt, jay::ip::IPv4Addr {10, 0, 0, 3});
+  stack2.ip.assign_ip(tap2.get(), jay::ip::IPv4Addr {10, 0, 0, 3}, 24);
+  auto udp_send = stack2.ip.udp_sock();
+  udp_send.connect(jay::ip::IPv4Addr {10, 0, 0, 2}, 12345);
+  jay::Buf buf(4);
+  *buf.begin() = 1;
+  *(buf.begin() + 1) = 2;
+  *(buf.begin() + 2) = 3;
+  *(buf.begin() + 3) = 4;
+  udp_send.send(buf);
   while (true) {
     stack.poll();
+    stack2.poll();
     std::this_thread::sleep_for(std::chrono::milliseconds {200});
   }
 }
