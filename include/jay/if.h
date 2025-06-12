@@ -10,6 +10,8 @@ class NeighCache;
 
 class Interface {
 public:
+  uint8_t hop_limit = 64;
+
   virtual ~Interface() {}
   /// Queue a packet for transmission on the interface. If the interface has no
   /// queue, the invocation may transmit the packet immediately, but may not

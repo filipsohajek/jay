@@ -182,7 +182,8 @@ void IPStack::icmp_deliver_msg(PBuf packet, NDPNeighborAdvertisement msg) {
   IPAddr tgt_iaddr = msg.target_addr();
   auto [local_ip, local_ip_state, match_len] = ips.match_longest(tgt_iaddr);
   if (match_len == 128) {
-    ip_notify_duplicate(local_ip);
+    if (local_ip_state->tentative)
+      ip_notify_duplicate(local_ip);
     return;
   }
 
@@ -245,6 +246,37 @@ void IPStack::icmp_deliver_msg(PBuf packet, NDPNeighborSolicitation msg) {
   reply_packet->iface = packet->iface;
 
   output(std::move(reply_packet));
+}
+
+void IPStack::icmp_deliver_msg(PBuf packet, NDPRouterAdvertisement msg) {
+  if (packet->ip().ttl() != 255)
+    return;
+  
+  if (uint8_t new_hop_limit = msg.hop_limit())
+    packet->iface->hop_limit = new_hop_limit;
+  for (auto opt_field : msg.options()) {
+    NDPOption opt = UNWRAP_RETURN(opt_field.read());
+    auto opt_var = opt.data().variant();
+    if (std::holds_alternative<NDPPrefixInfoOption>(opt_var)) {
+      auto prefix_info = std::get<NDPPrefixInfoOption>(opt_var);
+      if (!prefix_info.autonomous())
+        continue;
+      if (prefix_info.preferred_lifetime() > prefix_info.valid_lifetime())
+        continue;
+      IPAddr prefix = prefix_info.prefix();
+      uint8_t prefix_len = prefix_info.prefix_len();
+      if (prefix.is_link_local())
+        continue;
+
+      auto if_ident = packet->iface->ident();
+      if (8*sizeof(if_ident) + prefix_len != 128)
+        continue;
+      IPAddr local_addr = prefix.as_prefix_for(packet->iface->ident(), prefix_len);
+
+      if (!ips.contains(local_addr))
+        assign_ip(packet->iface, local_addr, prefix_len);
+    }
+  }
 }
 
 void IPStack::icmp_deliver(PBuf packet, IPVersion version) {
@@ -485,7 +517,7 @@ void IPStack::ip_output_final(PBuf packet) {
       packet->tspt_hdr);
 
   if (packet->ip().ttl() == 0)
-    packet->ip().ttl() = 128;
+    packet->ip().ttl() = packet->iface ? packet->iface->hop_limit : 64;
   else if (packet->forwarded)
     packet->ip().ttl() = packet->ip().ttl() - 1;
 

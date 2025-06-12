@@ -115,6 +115,16 @@ struct IPAddr : public std::array<uint8_t, 16> {
     return {};
   }
 
+  IPAddr as_prefix_for(std::array<uint8_t, 8> ident, uint8_t prefix_size) {
+    IPAddr new_addr {};
+    AsBits this_bits {*this};
+    AsBits new_bits {new_addr};
+    AsBits ident_bits {ident};
+    std::copy(this_bits.begin(), this_bits.begin() + prefix_size, new_bits.begin());
+    std::copy(ident_bits.begin() + (ident_bits.size() - prefix_size), ident_bits.end(), new_bits.begin() + prefix_size);
+    return new_bits.value;
+  }
+
   uint8_t prefix_len(uint8_t prefix) {
     return prefix + (is_v4() ? 96 : 0);
   }

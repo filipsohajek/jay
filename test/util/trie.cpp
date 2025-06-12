@@ -25,6 +25,7 @@ TEST_CASE("trie", "[trie]") {
     {{192, 168, 2, 128}, 6},
     {{192, 168, 0, 0}, 1}
   };
+
   REQUIRE_THAT(std::ranges::views::all(trie) | std::views::transform([](const auto& pair) {
     return std::make_pair(pair.first, *pair.second);
   }), Catch::Matchers::RangeEquals(expected));

@@ -65,6 +65,7 @@ private:
 
   void icmp_deliver_msg(PBuf, NDPNeighborAdvertisement);
   void icmp_deliver_msg(PBuf, NDPNeighborSolicitation);
+  void icmp_deliver_msg(PBuf, NDPRouterAdvertisement);
 
   IPAddr select_src_addr(std::optional<IPAddr> daddr_hint, Interface* iface = nullptr);
 
