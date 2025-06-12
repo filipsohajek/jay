@@ -151,7 +151,27 @@ struct ICMPDestinationUnreachableMessage : public BufStruct<ICMPDestinationUnrea
   }
 
   friend std::ostream& operator<<(std::ostream& os, const ICMPDestinationUnreachableMessage&) {
-    os << "Time exceeded";
+    os << "Destination unreachable";
+    return os;
+  }
+  static size_t size_hint() {
+    return 4;
+  }
+};
+
+struct ICMPPacketTooBig : public BufStruct<ICMPPacketTooBig, ICMPHeaderError> {
+  using BufStruct::BufStruct;
+  constexpr static const uint8_t V4_TYPE = 255;
+  constexpr static const uint8_t V6_TYPE = 0x2;
+  ICMPPacketTooBig() : BufStruct<ICMPPacketTooBig, ICMPHeaderError>(StructWriter({})) {};
+
+  STRUCT_FIELD(mtu, 0, uint32_t);
+  size_t size() const {
+    return 4;
+  }
+
+  friend std::ostream& operator<<(std::ostream& os, const ICMPPacketTooBig& msg) {
+    os << "Packet too big: mtu=" << msg.mtu();
     return os;
   }
   static size_t size_hint() {

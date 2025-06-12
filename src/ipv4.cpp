@@ -5,14 +5,9 @@
 namespace jay::ip {
 const size_t IPv4Header::MIN_SIZE;
 Result<IPv4Header, IPv4Header::ErrorType> IPv4Header::read(StructWriter cur) {
-  IPv4Header hdr{cur};
-  if (cur.size() < 4 * hdr.ihl())
-    return ResultError(IPHeaderError::OUT_OF_BOUNDS);
-  hdr.cur = cur.span().subspan(0, 4 * hdr.ihl());
+  IPv4Header hdr = UNWRAP_PROPAGATE(BufStruct::read(cur));
   if (inet_csum(hdr.cur.span()) != 0)
     return ResultError(IPHeaderError::CHECKSUM_ERROR);
-  if (hdr.version() != IPVersion::V4)
-    return ResultError(IPHeaderError::BAD_VERSION);
   return hdr;
 }
 
@@ -49,13 +44,12 @@ IPv4Header::construct(StructWriter cur, IPHeader &base_hdr,
   IPv4Header base_v4_hdr = base_hdr.v4();
   std::ranges::copy(base_v4_hdr.cursor().span().subspan(0, MIN_SIZE),
                     cur.span().begin());
-  auto hdr_res = IPv4Header::read(cur);
-  if (hdr_res.has_error())
-    return ResultError(hdr_res.error());
-  IPv4Header hdr = hdr_res.value();
+  IPv4Header hdr = UNWRAP_PROPAGATE(IPv4Header::read(cur));
 
   if (frag_data)
-    *frag_data = hdr.frag_data().read().value();
+    *frag_data = UNWRAP_PROPAGATE(hdr.frag_data().read());
+  else
+    UNWRAP_PROPAGATE(hdr.frag_data().construct());
   return hdr;
 }
 
@@ -66,20 +60,14 @@ IPv4Header::size_hint(IPProto, IPRAOption *ra_opt) {
 
 Result<IPv4Header, IPv4Header::ErrorType>
 IPv4Header::construct(StructWriter cur, IPProto proto, IPRAOption *ra_opt) {
-  auto hdr_res = IPv4Header::construct(cur, ra_opt ? 4 : 0);
-  if (hdr_res.has_error())
-    return ResultError(hdr_res.error());
-  IPv4Header hdr = hdr_res.value();
+  IPv4Header hdr = UNWRAP_PROPAGATE(IPv4Header::construct(cur, ra_opt ? 4 : 0));
 
   hdr.proto() = proto;
   if (ra_opt) {
-    auto opt_res = (*hdr.options().begin()).construct();
-    if (opt_res.has_error())
-      return ResultError(IPHeaderError::OPTION_ERROR);
-    IPv4Option opt = opt_res.value();
+    IPv4Option opt = UNWRAP_PROPAGATE((*hdr.options().begin()).construct());
     opt.length() = 4;
     opt.copied() = true;
-    *ra_opt = opt.option().set<IPv4RAOption>().value();
+    *ra_opt = UNWRAP_PROPAGATE(opt.option().set<IPv4RAOption>());
   }
 
   return hdr;

@@ -60,12 +60,13 @@ public:
   bool local = false;
   bool forwarded = false;
   bool router_alert = false;
-  
+  bool force_source_ip = true;
+
   bool has_last_fragment = false;
 
   std::variant<NoHdr, EthHeader> link_hdr;
-  std::variant<NoHdr, ip::ARPHeader, ip::IPHeader, ip::IGMPHeader> net_hdr;
-  std::variant<NoHdr, ip::ICMPHeader, udp::UDPHeader> tspt_hdr;
+  std::variant<NoHdr, ip::ARPHeader, ip::IPHeader> net_hdr;
+  std::variant<NoHdr, ip::ICMPHeader, udp::UDPHeader, ip::IGMPHeader> tspt_hdr;
   
   PBufStruct(size_t payload_size) : Buf(payload_size + 128) {
     mask(128);
@@ -105,14 +106,14 @@ public:
   
   bool is_ip() { return std::holds_alternative<ip::IPHeader>(net_hdr); }
   bool is_arp() { return std::holds_alternative<ip::ARPHeader>(net_hdr); }
-  bool is_igmp() { return std::holds_alternative<ip::IGMPHeader>(net_hdr); }
+  bool is_igmp() { return std::holds_alternative<ip::IGMPHeader>(tspt_hdr); }
   bool is_icmp() { return std::holds_alternative<ip::ICMPHeader>(tspt_hdr); }
   bool is_udp() { return std::holds_alternative<udp::UDPHeader>(tspt_hdr); }
 
   EthHeader& eth() { return std::get<EthHeader>(link_hdr); }
   ip::IPHeader& ip() { return std::get<ip::IPHeader>(net_hdr); }
   ip::ARPHeader& arp() { return std::get<ip::ARPHeader>(net_hdr); }
-  ip::IGMPHeader& igmp() { return std::get<ip::IGMPHeader>(net_hdr); }
+  ip::IGMPHeader& igmp() { return std::get<ip::IGMPHeader>(tspt_hdr); }
   ip::ICMPHeader& icmp() { return std::get<ip::ICMPHeader>(tspt_hdr); }
   udp::UDPHeader& udp() { return std::get<udp::UDPHeader>(tspt_hdr); }
 

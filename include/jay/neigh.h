@@ -57,11 +57,11 @@ public:
 
 private:
   void start_solicit(Interface *iface, ip::IPAddr tgt_iaddr,
-                     std::optional<ip::IPAddr> siaddr_hint,
+                     ip::IPAddr siaddr,
                      std::optional<HWAddr> thaddr_hint);
   hash_table<ip::IPAddr, Neighbour> cache;
   std::function<void(Interface *, ip::IPAddr, std::optional<HWAddr>,
-                     std::optional<ip::IPAddr>)>
+                     ip::IPAddr)>
       solicit_fn;
   std::function<void(ip::IPAddr, Neighbour &)> unreachable_fn;
 };

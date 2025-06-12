@@ -5,7 +5,7 @@
 #include "jay/ip/hdr_error.h"
 namespace jay::ip {
 
-struct IPv6FragData : public BufStruct<IPv6FragData> {
+struct IPv6FragData : public BufStruct<IPv6FragData, IPHeaderError> {
   static const uint8_t NH_TYPE = 44;
   using BufStruct::BufStruct;
   STRUCT_FIELD(next_header, 0, uint8_t);
@@ -18,7 +18,7 @@ struct IPv6FragData : public BufStruct<IPv6FragData> {
   static size_t size_hint() { return 8; }
 };
 
-struct IPv6RAOption : public BufStruct<IPv6RAOption> {
+struct IPv6RAOption : public BufStruct<IPv6RAOption, IPHeaderError> {
   using BufStruct::BufStruct;
   static const uint8_t UNION_TAG = 0x5;
   STRUCT_FIELD(value, 0, uint16_t);
@@ -26,7 +26,7 @@ struct IPv6RAOption : public BufStruct<IPv6RAOption> {
   size_t size() const { return 2; }
 };
 
-struct IPv6HBHOption : public BufStruct<IPv6HBHOption> {
+struct IPv6HBHOption : public BufStruct<IPv6HBHOption, IPHeaderError> {
   using BufStruct::BufStruct;
   STRUCT_FIELD(type, 0, uint8_t);
   STRUCT_FIELD(data_len, 1, uint8_t);
@@ -35,7 +35,7 @@ struct IPv6HBHOption : public BufStruct<IPv6HBHOption> {
   size_t size() const { return 2 + data_len(); }
 };
 
-struct IPv6HBHOptions : public BufStruct<IPv6HBHOptions> {
+struct IPv6HBHOptions : public BufStruct<IPv6HBHOptions, IPHeaderError> {
   static const uint8_t NH_TYPE = 0;
   using BufStruct::BufStruct;
   STRUCT_FIELD(next_header, 0, uint8_t);
@@ -48,7 +48,7 @@ struct IPv6HBHOptions : public BufStruct<IPv6HBHOptions> {
 struct IPFragData;
 struct IPRAOption;
 struct IPHeader;
-struct IPv6Header : public BufStruct<IPv6Header> {
+struct IPv6Header : public BufStruct<IPv6Header, IPHeaderError> {
   using BufStruct::BufStruct;
   static const size_t MIN_SIZE = 40;
 
@@ -61,9 +61,6 @@ struct IPv6Header : public BufStruct<IPv6Header> {
   STRUCT_FIELD(ttl, 7, uint8_t);
   STRUCT_FIELD(src_addr, 8, IPAddr);
   STRUCT_FIELD(dst_addr, 24, IPAddr);
-
-  using ErrorType = IPHeaderError;
-
   struct ExtHdrIterator {
     struct EndSentinel {};
     using value_type =
@@ -121,7 +118,6 @@ struct IPv6Header : public BufStruct<IPv6Header> {
 
   ExtHdrIterator::EndSentinel exthdr_end() const { return {}; }
 
-  static Result<IPv6Header, ErrorType> read(StructWriter cur);
   static size_t size_hint(size_t exthdr_size);
   static Result<IPv6Header, ErrorType> construct(StructWriter cur,
                                                  size_t exthdr_size);
@@ -140,6 +136,10 @@ struct IPv6Header : public BufStruct<IPv6Header> {
     return last_cur.span().data() - first_cur.span().data();
   }
   
+  static size_t size_hint() {
+    return size_hint(0);
+  }
+
   size_t size() const { return MIN_SIZE + exthdr_size(); }
 };
 } // namespace jay::ip

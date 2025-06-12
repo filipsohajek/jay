@@ -54,6 +54,7 @@ struct TestStruct : public jay::BufStruct<TestStruct> {
   STRUCT_FIELD(u32_field, 3, uint32_t);
 
   size_t size() const { return 7; }
+  static size_t size_hint() { return 7; }
 };
 struct TestStruct2 : public jay::BufStruct<TestStruct2> {
   using ::TestStruct2::BufStruct::BufStruct;
@@ -61,6 +62,7 @@ struct TestStruct2 : public jay::BufStruct<TestStruct2> {
   STRUCT_FIELD(u16_field, 2, uint16_t);
   STRUCT_FIELD(u32_field, 4, uint32_t);
   size_t size() const { return 8; }
+  static size_t size_hint() { return 8; }
 };
 struct TestVariant : public std::variant<TestStruct, TestStruct2>, jay::JointStruct {
   using std::variant<TestStruct, TestStruct2>::variant;

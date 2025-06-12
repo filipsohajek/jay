@@ -19,7 +19,7 @@ TEST_CASE("NeighCache initial resolution", "[neighbour]") {
   ncache.retrans_timeout = std::chrono::milliseconds(100);
   std::optional<
       std::tuple<jay::Interface *, jay::ip::IPAddr, std::optional<jay::HWAddr>,
-                 std::optional<jay::ip::IPAddr>>>
+                 jay::ip::IPAddr>>
       last_sol;
   std::optional<jay::ip::IPAddr> last_unreach;
   ncache.set_callbacks(
@@ -50,8 +50,8 @@ TEST_CASE("NeighCache initial resolution", "[neighbour]") {
         auto [ifa, ip, hwa, sip] = last_sol.value();
 
         INFO("solicitation: tgt_iaddr="
-             << ip.v4() << ", thaddr_hint=" << hwa.value_or(jay::HWAddr{})
-             << ", siaddr_hint=" << sip.value_or(jay::ip::IPAddr{}).v4() << "\n");
+             << ip << ", thaddr_hint=" << hwa.value_or(jay::HWAddr{})
+             << ", siaddr_hint=" << sip << "\n");
         REQUIRE(last_sol ==
                 std::make_tuple(nullptr, nh_iaddr, std::nullopt, src_addr));
         last_sol.reset();

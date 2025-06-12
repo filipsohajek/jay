@@ -28,46 +28,55 @@ public:
   void setup_interface(Interface *);
   void assign_ip(Interface *, IPAddr, uint8_t prefix_len);
 
+  void mcast_join(Interface*, IPAddr);
+  void mcast_leave(Interface*, IPAddr);
+
   void poll();
   SocketTable &sock_table() { return _sock_table; }
   IPRouter &router() { return _router; }
   udp::UDPSocket udp_sock() {
     return {*this};
   }
-  void mcast_join(Interface*, IPAddr);
-  void mcast_leave(Interface*, IPAddr);
 private:
   void ip_input_v4(PBuf);
   void ip_input_v6(PBuf);
+  void ip_reassemble_single(PBuf, IPFragData);
 
   void arp_output(PBuf);
+  void ip_forward(PBuf);
   void ip_output_resolve(PBuf);
   void ip_output_fragment(PBuf, size_t if_mtu);
   void ip_output_final(PBuf);
 
   void ip_deliver(PBuf, IPProto);
   void udp_deliver(PBuf);
+  void icmp_deliver(PBuf, IPVersion);
   void igmp_deliver(PBuf);
+
+  void ip_notify_duplicate(IPAddr);
   void icmp_notify_unreachable(PBuf, UnreachableReason);
+  void icmp_deliver_msg(PBuf, ICMPEchoRequestMessage);
 
   void igmp_send_report(IGMPMessageType, Interface*, IPv4Addr);
+  void igmp_deliver_query(Interface*, IPv4Addr group_addr, IPv4Addr dst_addr, uint16_t max_resp_ms);
+
   void mld_send_report(Interface*, IPAddr, bool leave);
+  void icmp_deliver_msg(PBuf, MLDQuery);
+
+  void icmp_deliver_msg(PBuf, NDPNeighborAdvertisement);
+  void icmp_deliver_msg(PBuf, NDPNeighborSolicitation);
 
   IPAddr select_src_addr(std::optional<IPAddr> daddr_hint, Interface* iface = nullptr);
 
-  void icmp_deliver(PBuf, IPVersion);
-  void solicit_haddr(Interface *iface, IPAddr tgt_iaddr,
+  void solicit_haddr(Interface *, IPAddr tgt_iaddr,
                      std::optional<HWAddr> thaddr_hint,
-                     std::optional<IPAddr> siaddr_hint);
-  void reassemble_single(PBuf, IPFragData);
+                     IPAddr siaddr);
+  void solicit_haddr_v4(Interface*, IPv4Addr tgt_iaddr, IPv4Addr sdr_iaddr, std::optional<HWAddr> thaddr_hint);
+  void solicit_haddr_v6(Interface*, IPAddr tgt_iaddr, IPAddr sdr_iaddr, std::optional<HWAddr> thaddr_hint);
 
-  enum class AddrScope {
-    LINK,
-    GLOBAL
-  };
+
   struct AddrState {
     uint8_t prefix_len = 0;
-    AddrScope scope;
     std::unique_ptr<Timer> dad_timer = nullptr;
     bool tentative = false;
     Interface *iface = nullptr;

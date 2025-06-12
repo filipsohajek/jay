@@ -1,4 +1,5 @@
 #include "jay/if.h"
+#include "jay/util/rng.h"
 #include "jay/ip/igmp.h"
 #include "jay/ip/mld.h"
 #include "jay/ip/ndp.h"
@@ -6,36 +7,22 @@
 #include "jay/ip/stack.h"
 #include "jay/pbuf.h"
 #include "jay/stack.h"
-#include <iostream>
-#include <random>
 
 namespace jay::ip {
 void IPStack::ip_input(PBuf packet, IPVersion version) {
-  if (!packet->is_ip() && packet->read_net_hdr<IPHeader>(version).has_error())
-    return;
-  auto ip_hdr = packet->ip();
+  IPHeader ip_hdr =
+      packet->is_ip() ? packet->ip()
+                      : UNWRAP_RETURN(packet->read_net_hdr<IPHeader>(version));
   IPAddr dst_addr = ip_hdr.dst_addr();
 
   auto [local_ip, local_ip_state, match_len] = ips.match_longest(dst_addr);
   if (match_len != 128) {
-    bool broadcast = false;
-    if (dst_addr.is_v4()) {
-      if (local_ip_state && (match_len >= local_ip_state->prefix_len)) {
-        auto dst_bits = AsBits{dst_addr};
-        broadcast =
-            std::ranges::all_of(dst_bits.begin() + local_ip_state->prefix_len,
-                                dst_bits.end(), [](bool b) { return b; });
-      }
-    }
+    bool broadcast =
+        dst_addr.is_v4() &&
+        (dst_addr.is_broadcast() ||
+         dst_addr.is_directed_broadcast(local_ip_state->prefix_len));
     if (!broadcast && !dst_addr.is_multicast()) {
-      packet->forwarded = true;
-      if (packet->ip().ttl() == 0) {
-        output(PBuf::icmp_for<ICMPTimeExceededMessage>(
-            packet->ip().src_addr(), nullptr, TimeExceededType::HOP_LIMIT,
-            &packet->buf()));
-        return;
-      }
-      output(std::move(packet));
+      ip_forward(std::move(packet));
       return;
     }
   }
@@ -47,11 +34,22 @@ void IPStack::ip_input(PBuf packet, IPVersion version) {
   }
 }
 
+void IPStack::ip_forward(PBuf packet) {
+  packet->forwarded = true;
+  if (packet->ip().ttl() == 0) {
+    output(PBuf::icmp_for<ICMPTimeExceededMessage>(
+        packet->ip().src_addr(), nullptr, TimeExceededType::HOP_LIMIT,
+        &packet->buf()));
+    return;
+  }
+  output(std::move(packet));
+}
+
 void IPStack::ip_input_v4(PBuf packet) {
   IPv4Header v4_hdr = packet->ip().v4();
   IPFragData frag_data = v4_hdr.frag_data().read().value();
   if (frag_data.more_frags() || (frag_data.frag_offset() > 0)) {
-    reassemble_single(std::move(packet), frag_data);
+    ip_reassemble_single(std::move(packet), frag_data);
     return;
   }
   for (auto opt_field : v4_hdr.options()) {
@@ -77,15 +75,15 @@ void IPStack::ip_input_v6(PBuf packet) {
       // TODO
       IPv6HBHOptions hbh_opts = std::get<IPv6HBHOptions>(ehdr_opt);
       for (auto opt_field : hbh_opts.options()) {
-        auto opt_res = opt_field.read();
-        if (opt_res.has_error())
-          return;
-        auto opt_variant = opt_res.value().data().variant();
+        IPv6HBHOption hbh_opt = UNWRAP_RETURN(opt_field.read());
+        auto opt_variant = hbh_opt.data().variant();
         if (std::holds_alternative<IPv6RAOption>(opt_variant))
           packet->router_alert = true;
+        else if (!(hbh_opt.type().value() & 0xc0))
+          return;
       }
     } else if (std::holds_alternative<IPv6FragData>(ehdr_opt)) {
-      reassemble_single(std::move(packet), std::get<IPv6FragData>(ehdr_opt));
+      ip_reassemble_single(std::move(packet), std::get<IPv6FragData>(ehdr_opt));
       return;
     }
   }
@@ -95,21 +93,15 @@ void IPStack::ip_input_v6(PBuf packet) {
 void IPStack::ip_deliver(PBuf packet, IPProto proto) {
   switch (proto) {
   case IPProto::ICMP:
-    if (!packet->ip().is_v4())
-      break;
     icmp_deliver(std::move(packet), IPVersion::V4);
     break;
   case IPProto::ICMPv6:
-    if (!packet->ip().is_v6())
-      break;
     icmp_deliver(std::move(packet), IPVersion::V6);
     break;
   case IPProto::UDP:
     udp_deliver(std::move(packet));
     break;
   case IPProto::IGMP:
-    if (!packet->ip().is_v4())
-      break;
     igmp_deliver(std::move(packet));
     break;
   default:
@@ -120,157 +112,159 @@ void IPStack::ip_deliver(PBuf packet, IPProto proto) {
 void IPStack::igmp_deliver(PBuf packet) {
   if (!packet->ip().is_v4())
     return;
-  IPv4Addr group_addr = IPAddr(packet->ip().dst_addr()).v4();
-  if (!group_addr.is_multicast())
+  if (!packet->router_alert)
     return;
-
-  if (packet->read_net_hdr<IGMPHeader>().has_error())
-    return;
-  auto igmp_header = packet->igmp();
+  IPv4Addr dst_addr = IPAddr(packet->ip().dst_addr()).v4();
+  IGMPHeader igmp_header = UNWRAP_RETURN(packet->read_tspt_hdr<IGMPHeader>());
+  IPv4Addr group_addr = igmp_header.group_addr();
   if (igmp_header.type() == IGMPMessageType::MEMBER_QUERY) {
-    if (mcast_groups.contains({packet->iface, group_addr})) {
-      uint16_t max_resp_ms = igmp_header.max_resp_time() * 100;
-      std::mt19937 mt;
-      std::uniform_int_distribution<uint16_t> dur_unif(0, max_resp_ms);
-      Interface *iface = packet->iface;
-      auto resp_timer =
-          timers.create(std::chrono::milliseconds{dur_unif(mt)},
-                        [this, iface, group_addr](Timer *timer) {
-                          std::unique_ptr<Timer> search_ptr(timer);
-                          mcast_resp_timers.erase(search_ptr);
-                          igmp_send_report(IGMPMessageType::V2_MEMBER_REPORT,
-                                           iface, group_addr);
-                          search_ptr.release();
-                        });
-      mcast_resp_timers.insert(std::move(resp_timer));
+    igmp_deliver_query(packet->iface, group_addr, dst_addr,
+                       igmp_header.max_resp_time() * 100);
+  }
+}
+
+void IPStack::igmp_deliver_query(Interface *iface, IPv4Addr group_addr,
+                                 IPv4Addr dst_addr, uint16_t max_resp_ms) {
+  if ((group_addr == IPv4Addr::any()) && (dst_addr != IPv4Addr::all_systems()))
+    return;
+  if (group_addr != dst_addr)
+    return;
+  if (!mcast_groups.contains({iface, group_addr}))
+    return;
+  auto resp_timer = timers.create(
+      std::chrono::milliseconds{random_int(0, max_resp_ms)},
+      [this, iface, group_addr](Timer *timer) {
+        std::unique_ptr<Timer> search_ptr(timer);
+        mcast_resp_timers.erase(search_ptr);
+        igmp_send_report(IGMPMessageType::V2_MEMBER_REPORT, iface, group_addr);
+        search_ptr.release();
+      });
+  mcast_resp_timers.insert(std::move(resp_timer));
+}
+
+void IPStack::udp_deliver(PBuf packet) {
+  UNWRAP_RETURN(packet->read_tspt_hdr<udp::UDPHeader>());
+  _sock_table.deliver(std::move(packet));
+}
+
+void IPStack::icmp_deliver_msg(PBuf packet, ICMPEchoRequestMessage msg) {
+  ICMPEchoReplyMessage reply_msg;
+  PBuf reply_packet = PBuf::icmp_for<ICMPEchoReplyMessage>(
+      packet->ip().src_addr(), &reply_msg, 0, &packet->buf());
+  reply_packet->ip().src_addr() = IPAddr(packet->ip().dst_addr());
+  reply_msg.ident() = uint16_t(msg.ident());
+  reply_msg.seq_num() = uint16_t(msg.seq_num());
+  reply_packet->iface = packet->iface;
+  output(std::move(reply_packet));
+}
+
+void IPStack::icmp_deliver_msg(PBuf packet, MLDQuery msg) {
+  IPAddr mcast_addr = msg.mcast_addr();
+  if (!mcast_groups.contains({packet->iface, mcast_addr}))
+    return;
+  uint16_t max_resp_ms = msg.max_resp_time();
+  Interface *iface = packet->iface;
+  auto resp_timer = timers.create(std::chrono::milliseconds{random_int(0, max_resp_ms)},
+                                  [this, iface, mcast_addr](Timer *timer) {
+                                    std::unique_ptr<Timer> search_ptr(timer);
+                                    mcast_resp_timers.erase(search_ptr);
+                                    mld_send_report(iface, mcast_addr, false);
+                                    search_ptr.release();
+                                  });
+  mcast_resp_timers.insert(std::move(resp_timer));
+}
+
+void IPStack::ip_notify_duplicate(IPAddr addr) {
+  ips.erase(addr);
+}
+
+void IPStack::icmp_deliver_msg(PBuf packet, NDPNeighborAdvertisement msg) {
+  IPAddr tgt_iaddr = msg.target_addr();
+  auto [local_ip, local_ip_state, match_len] = ips.match_longest(tgt_iaddr);
+  if (match_len == 128) {
+    ip_notify_duplicate(local_ip);
+    return;
+  }
+
+  std::optional<HWAddr> tgt_haddr;
+  for (auto adv_opt_field : msg.options()) {
+    NDPOption adv_opt = adv_opt_field.read().value();
+    auto opt_variant = adv_opt.data().variant();
+    if (std::holds_alternative<NDPTargetAddrOption>(opt_variant))
+      tgt_haddr = std::get<NDPTargetAddrOption>(opt_variant).addr();
+  }
+  auto queued =
+      packet->iface->neighbours.process_adv(msg.target_addr(), tgt_haddr,
+                                            {.is_adv = true,
+                                             .router = msg.router(),
+                                             .solicited = msg.solicited(),
+                                             .override = msg.override()});
+  if (queued.has_value()) {
+    for (auto &&packet : queued.value()) {
+      output(std::move(packet));
     }
   }
 }
 
-void IPStack::udp_deliver(PBuf packet) {
-  if (packet->read_tspt_hdr<udp::UDPHeader>().has_error())
+void IPStack::icmp_deliver_msg(PBuf packet, NDPNeighborSolicitation msg) {
+  IPAddr tgt_iaddr = msg.target_addr();
+  auto [local_ip, local_ip_state, match_len] = ips.match_longest(tgt_iaddr);
+  if (match_len != 128)
     return;
-  _sock_table.deliver(std::move(packet));
+  if (local_ip_state->tentative)
+    return;
+
+  std::optional<HWAddr> src_haddr;
+  for (auto adv_opt_field : msg.options()) {
+    NDPOption adv_opt = adv_opt_field.read().value();
+    auto opt_variant = adv_opt.data().variant();
+    if (std::holds_alternative<NDPSourceAddrOption>(opt_variant))
+      src_haddr = std::get<NDPSourceAddrOption>(opt_variant).addr();
+  }
+
+  NDPNeighborAdvertisement adv_msg;
+  PBuf reply_packet;
+  reply_packet->reserve_headers();
+  ICMPHeader icmp_hdr =
+      reply_packet
+          ->construct_tspt_hdr<ICMPHeader>(IPVersion::V6, adv_msg, 0,
+                                           packet->iface->addr())
+          .value();
+  adv_msg.solicited() = true;
+  adv_msg.target_addr() = tgt_iaddr;
+  reply_packet->unmask(icmp_hdr.size());
+
+  IPHeader ip_hdr =
+      reply_packet->construct_net_hdr<IPHeader>(IPVersion::V6, IPProto::ICMPv6)
+          .value();
+  ip_hdr.dst_addr() = IPAddr(packet->ip().src_addr());
+  ip_hdr.src_addr() = tgt_iaddr;
+  ip_hdr.ttl() = 255;
+  if (src_haddr.has_value())
+    reply_packet->nh_haddr = src_haddr.value();
+  reply_packet->iface = packet->iface;
+
+  output(std::move(reply_packet));
 }
 
 void IPStack::icmp_deliver(PBuf packet, IPVersion version) {
-  auto icmp_res = packet->read_tspt_hdr<ICMPHeader>(version);
-  if (icmp_res.has_error())
+  if (packet->ip().version() != version)
     return;
 
-  auto icmp_hdr = packet->icmp();
+  ICMPHeader icmp_hdr =
+      UNWRAP_RETURN(packet->read_tspt_hdr<ICMPHeader>(version));
   packet->unmask(icmp_hdr.size());
   IPProto proto = (version == IPVersion::V4) ? IPProto::ICMP : IPProto::ICMPv6;
   if (inet_csum(*packet, packet->ip().pseudohdr_sum(proto)) != 0x0000)
     return;
   packet->mask(icmp_hdr.size());
 
-  auto msg_var = icmp_hdr.message();
-
-  std::cout << "this variant holds index " << msg_var.index()
-            << ", while NDP NS's index is "
-            << decltype(msg_var)(NDPNeighborSolicitation{}).index() << "\n";
-  if (std::holds_alternative<ICMPEchoRequestMessage>(msg_var)) {
-    ICMPEchoRequestMessage msg = std::get<ICMPEchoRequestMessage>(msg_var);
-    ICMPEchoReplyMessage reply_msg;
-    PBuf reply_packet = PBuf::icmp_for<ICMPEchoReplyMessage>(
-        packet->ip().src_addr(), &reply_msg, 0, &packet->buf());
-    reply_packet->ip().src_addr() = IPAddr(packet->ip().dst_addr());
-    reply_msg.ident() = uint16_t(msg.ident());
-    reply_msg.seq_num() = uint16_t(msg.seq_num());
-    reply_packet->iface = packet->iface;
-    output(std::move(reply_packet));
-  }
-  if (std::holds_alternative<MLDQuery>(msg_var)) {
-    MLDQuery msg = std::get<MLDQuery>(msg_var);
-    IPAddr mcast_addr = msg.mcast_addr();
-    if (mcast_groups.contains({packet->iface, mcast_addr})) {
-      uint16_t max_resp_ms = msg.max_resp_time();
-      std::mt19937 mt;
-      std::uniform_int_distribution<uint16_t> dur_unif(0, max_resp_ms);
-      Interface *iface = packet->iface;
-      auto resp_timer =
-          timers.create(std::chrono::milliseconds{dur_unif(mt)},
-                        [this, iface, mcast_addr](Timer *timer) {
-                          std::unique_ptr<Timer> search_ptr(timer);
-                          mcast_resp_timers.erase(search_ptr);
-                          mld_send_report(iface, mcast_addr, false);
-                          search_ptr.release();
-                        });
-      mcast_resp_timers.insert(std::move(resp_timer));
-    }
-  }
-  if (std::holds_alternative<NDPNeighborAdvertisement>(msg_var)) {
-    NDPNeighborAdvertisement msg = std::get<NDPNeighborAdvertisement>(msg_var);
-    IPAddr tgt_iaddr = msg.target_addr();
-    auto [local_ip, local_ip_state, match_len] = ips.match_longest(tgt_iaddr);
-    if (match_len == 128) {
-      if (local_ip_state->tentative)
-        ips.erase(tgt_iaddr);
-      return;
-    }
-
-    std::optional<HWAddr> tgt_haddr;
-    for (auto adv_opt_field : msg.options()) {
-      NDPOption adv_opt = adv_opt_field.read().value();
-      auto opt_variant = adv_opt.data().variant();
-      if (std::holds_alternative<NDPTargetAddrOption>(opt_variant))
-        tgt_haddr = std::get<NDPTargetAddrOption>(opt_variant).addr();
-    }
-    auto queued =
-        packet->iface->neighbours.process_adv(msg.target_addr(), tgt_haddr,
-                                              {.is_adv = true,
-                                               .router = msg.router(),
-                                               .solicited = msg.solicited(),
-                                               .override = msg.override()});
-    if (queued.has_value()) {
-      for (auto &&packet : queued.value()) {
-        output(std::move(packet));
-      }
-    }
-  }
-  if (std::holds_alternative<NDPNeighborSolicitation>(msg_var)) {
-    NDPNeighborSolicitation msg = std::get<NDPNeighborSolicitation>(msg_var);
-    IPAddr tgt_iaddr = msg.target_addr();
-    auto [local_ip, local_ip_state, match_len] = ips.match_longest(tgt_iaddr);
-    if (match_len != 128)
-      return;
-    if (local_ip_state->tentative)
-      return;
-
-    std::optional<HWAddr> src_haddr;
-    for (auto adv_opt_field : msg.options()) {
-      NDPOption adv_opt = adv_opt_field.read().value();
-      auto opt_variant = adv_opt.data().variant();
-      if (std::holds_alternative<NDPSourceAddrOption>(opt_variant))
-        src_haddr = std::get<NDPSourceAddrOption>(opt_variant).addr();
-    }
-
-    NDPNeighborAdvertisement adv_msg;
-    PBuf reply_packet;
-    reply_packet->reserve_headers();
-    ICMPHeader icmp_hdr =
-        reply_packet
-            ->construct_tspt_hdr<ICMPHeader>(IPVersion::V6, adv_msg, 0,
-                                             packet->iface->addr())
-            .value();
-    adv_msg.solicited() = true;
-    adv_msg.target_addr() = tgt_iaddr;
-    reply_packet->unmask(icmp_hdr.size());
-
-    IPHeader ip_hdr =
-        reply_packet
-            ->construct_net_hdr<IPHeader>(IPVersion::V6, IPProto::ICMPv6)
-            .value();
-    ip_hdr.dst_addr() = IPAddr(packet->ip().src_addr());
-    ip_hdr.src_addr() = tgt_iaddr;
-    ip_hdr.ttl() = 255;
-    if (src_haddr.has_value())
-      reply_packet->nh_haddr = src_haddr.value();
-    reply_packet->iface = packet->iface;
-
-    output(std::move(reply_packet));
-  }
+  std::visit(
+      [&](auto msg) {
+        if constexpr (requires { icmp_deliver_msg(PBuf(), msg); })
+          icmp_deliver_msg(std::move(packet), msg);
+      },
+      icmp_hdr.message());
 }
 
 void IPStack::reassemble_timeout(ReassKey reass_key, Reassembly &reass) {
@@ -286,14 +280,13 @@ void IPStack::reassemble_timeout(ReassKey reass_key, Reassembly &reass) {
   output(std::move(reply_packet));
 }
 
-void IPStack::reassemble_single(PBuf packet, IPFragData frag_data) {
-  std::tuple<IPAddr, IPAddr, uint32_t> frag_key = {packet->ip().src_addr(),
-                                                   packet->ip().dst_addr(),
-                                                   frag_data.identification()};
-  Reassembly &reass = reass_queue[frag_key];
+void IPStack::ip_reassemble_single(PBuf packet, IPFragData frag_data) {
+  ReassKey reass_key{packet->ip().src_addr(), packet->ip().dst_addr(),
+                     frag_data.identification()};
+  Reassembly &reass = reass_queue[reass_key];
   if (reass.packet->size() == 0) {
-    reass.timer = timers.create(reassembly_timeout, [this, frag_key](Timer *) {
-      reassemble_timeout(frag_key, reass_queue[frag_key]);
+    reass.timer = timers.create(reassembly_timeout, [this, reass_key](Timer *) {
+      reassemble_timeout(reass_key, reass_queue[reass_key]);
     });
     reass.packet->reserve_headers();
     reass.packet->construct_net_hdr<IPHeader>(packet->ip().version(),
@@ -302,27 +295,25 @@ void IPStack::reassemble_single(PBuf packet, IPFragData frag_data) {
 
   if (!frag_data.more_frags()) {
     if (packet->has_last_fragment) {
-      reass_queue.erase(frag_key);
+      reass_queue.erase(reass_key);
       return;
     }
     packet->has_last_fragment = true;
   }
 
   if (reass.packet->insert(*packet, frag_data.frag_offset()).has_error()) {
-    reass_queue.erase(frag_key);
+    reass_queue.erase(reass_key);
     return;
   }
 
   if (reass.packet->is_complete() && packet->has_last_fragment) {
     ip_input(std::move(reass.packet), packet->ip().version());
-    reass_queue.erase(frag_key);
+    reass_queue.erase(reass_key);
   }
 }
 
 void IPStack::arp_input(PBuf packet) {
-  if (packet->read_net_hdr<ARPHeader>().has_error())
-    return;
-  auto arp_hdr = packet->arp();
+  ARPHeader arp_hdr = UNWRAP_RETURN(packet->read_net_hdr<ARPHeader>());
 
   if (arp_hdr.op() == ARPOp::REQUEST) {
     auto [tgt_ip, tgt_ip_state, match_len] =
@@ -344,7 +335,6 @@ void IPStack::arp_input(PBuf packet) {
     reply_arp_hdr.tgt_iaddr() = IPv4Addr(arp_hdr.sdr_iaddr());
     reply_packet->unmask(reply_arp_hdr.size());
     output(std::move(reply_packet));
-
   } else if (arp_hdr.op() == ARPOp::REPLY) {
     auto queue_opt = packet->iface->neighbours.process_adv(
         arp_hdr.sdr_iaddr().value(), arp_hdr.sdr_haddr(),
@@ -361,6 +351,10 @@ void IPStack::arp_input(PBuf packet) {
 }
 
 void IPStack::arp_output(PBuf packet) {
+  ARPHeader arp_hdr = packet->arp();
+  if (arp_hdr.sdr_iaddr().value() == IPv4Addr::any())
+    arp_hdr.sdr_iaddr() = select_src_addr(arp_hdr.tgt_iaddr().value(), packet->iface);
+
   packet->construct_link_hdr<EthHeader>();
   packet->eth().src_haddr() = HWAddr(packet->arp().sdr_haddr());
   if (HWAddr(packet->arp().tgt_haddr()) == HWAddr::zero()) {
@@ -374,17 +368,19 @@ void IPStack::arp_output(PBuf packet) {
 }
 
 void IPStack::ip_output_resolve(PBuf packet) {
-  if (_router.route(packet).has_error())
-    throw std::runtime_error("cannot route packet");
-  if (!packet->nh_haddr.has_value()) {
-    IPAddr dst_ip = packet->ip().dst_addr();
-    auto [local_ip, local_ip_state, local_ip_match] =
-        ips.match_longest(dst_ip.v4());
-    if (local_ip_match == 32) {
-      Interface *local_if = local_ip_state->iface;
-      packet->iface = local_if;
-      packet->local = true;
-    } else if (dst_ip.is_multicast()) {
+  IPAddr dst_ip = packet->ip().dst_addr();
+
+  auto [local_ip, local_ip_state, local_ip_match] =
+      ips.match_longest(dst_ip.v4());
+  if (local_ip_match == 128) {
+    packet->iface = local_ip_state->iface;
+    packet->local = true;
+  }
+
+  IPRouter::Destination *dst = UNWRAP_RETURN(_router.route(packet));
+
+  if (!packet->local && !packet->nh_haddr.has_value()) {
+    if (dst_ip.is_multicast()) {
       packet->nh_haddr = dst_ip.multicast_haddr();
     } else {
       auto resolved_packet =
@@ -394,31 +390,51 @@ void IPStack::ip_output_resolve(PBuf packet) {
       packet = std::move(resolved_packet.value());
     }
   }
-  uint16_t if_mtu = packet->iface->mtu();
 
-  if (packet->size() > if_mtu) {
-    if (packet->ip().is_v4()) {
-      if (packet->ip().v4().frag_data().read().value().dont_frag()) {
-        icmp_notify_unreachable(std::move(packet),
-                                UnreachableReason::PACKET_TOO_BIG);
-        return;
-      }
-    }
-    ip_output_fragment(std::move(packet), if_mtu);
-  } else {
-    ip_output_final(std::move(packet));
+  if (IPAddr(packet->ip().src_addr()).is_any() && !packet->force_source_ip) {
+    std::optional<IPAddr> src_addr;
+    if (dst)
+      src_addr = dst->src_iaddr;
+    if (!src_addr.has_value())
+      src_addr = select_src_addr(packet->ip().dst_addr(), packet->iface);
+    packet->ip().src_addr() = src_addr.value();
+    if (dst)
+      dst->src_iaddr = src_addr;
   }
+
+  uint16_t if_mtu = packet->iface->mtu();
+  if (packet->size() <= if_mtu) {
+    ip_output_final(std::move(packet));
+    return;
+  }
+
+  if (packet->ip().is_v4()) {
+    if (packet->ip().v4().frag_data().read().value().dont_frag()) {
+      if (packet->is_icmp())
+        return;
+      icmp_notify_unreachable(std::move(packet),
+                              UnreachableReason::PACKET_TOO_BIG);
+      return;
+    }
+  } else if (packet->forwarded) {
+    if (packet->is_icmp())
+      return;
+    output(PBuf::icmp_for<ICMPPacketTooBig>(packet->ip().src_addr(), nullptr, 0,
+                                            &packet->buf()));
+    return;
+  }
+  ip_output_fragment(std::move(packet), if_mtu);
 }
 
 void IPStack::ip_output_fragment(PBuf packet, size_t if_mtu) {
   size_t frag_offset = 0;
   while (packet->size() > 0) {
     PBuf fragment;
+    fragment->reserve_headers();
     fragment->iface = packet->iface;
     fragment->nh_haddr = packet->nh_haddr;
     fragment->nh_iaddr = packet->nh_iaddr;
 
-    fragment->reserve_headers();
     IPFragData frag_data;
     fragment->construct_net_hdr<IPHeader>(packet->ip().version(), packet->ip(),
                                           &frag_data);
@@ -461,6 +477,9 @@ void IPStack::ip_output_final(PBuf packet) {
           else
             tspt_hdr.checksum() = inet_csum(
                 packet->buf(), packet->ip().pseudohdr_sum(IPProto::ICMPv6));
+        } else if constexpr (std::is_same_v<decltype(tspt_hdr), IGMPHeader>) {
+          tspt_hdr.checksum() = 0;
+          tspt_hdr.checksum() = inet_csum(packet->buf());
         }
       },
       packet->tspt_hdr);
@@ -497,56 +516,62 @@ void IPStack::output(PBuf packet) {
     throw std::invalid_argument("not an IP or ARP packet");
 }
 
+void IPStack::solicit_haddr_v4(Interface *iface, IPv4Addr tgt_iaddr,
+                               IPv4Addr sdr_iaddr,
+                               std::optional<HWAddr> thaddr_hint) {
+  PBuf solicit_packet;
+  solicit_packet->reserve_headers();
+  solicit_packet->iface = iface;
+  ARPHeader arp_hdr = solicit_packet->construct_net_hdr<ARPHeader>().value();
+  arp_hdr.op() = ARPOp::REQUEST;
+  arp_hdr.sdr_haddr() = iface->addr();
+  arp_hdr.sdr_iaddr() = sdr_iaddr;
+  arp_hdr.tgt_haddr() = thaddr_hint.value_or(HWAddr::zero());
+  arp_hdr.tgt_iaddr() = tgt_iaddr;
+  solicit_packet->unmask(arp_hdr.size());
+  output(std::move(solicit_packet));
+}
+
+void IPStack::solicit_haddr_v6(Interface *iface, IPAddr tgt_iaddr,
+                               IPAddr siaddr,
+                               std::optional<HWAddr> thaddr_hint) {
+  IPAddr dst_addr;
+  if (thaddr_hint.has_value())
+    dst_addr = tgt_iaddr;
+  else
+    dst_addr = IPAddr::solicited_node(tgt_iaddr);
+
+  NDPNeighborSolicitation solicit_msg;
+  PBuf solicit_packet;
+  solicit_packet->reserve_headers();
+  ICMPHeader icmp_hdr = solicit_packet
+                            ->construct_tspt_hdr<ICMPHeader>(
+                                IPVersion::V6, solicit_msg, 0, iface->addr())
+                            .value();
+  solicit_msg.target_addr() = tgt_iaddr;
+  solicit_packet->unmask(icmp_hdr.size());
+
+  IPHeader ip_hdr =
+      solicit_packet
+          ->construct_net_hdr<IPHeader>(IPVersion::V6, IPProto::ICMPv6)
+          .value();
+  ip_hdr.src_addr() = siaddr;
+  solicit_packet->force_source_ip = true;
+  ip_hdr.dst_addr() = dst_addr;
+  ip_hdr.ttl() = 255;
+
+  solicit_packet->iface = iface;
+  solicit_packet->nh_haddr = thaddr_hint.value_or(tgt_iaddr.multicast_haddr());
+  output(std::move(solicit_packet));
+}
+
 void IPStack::solicit_haddr(Interface *iface, IPAddr tgt_iaddr,
                             std::optional<HWAddr> thaddr_hint,
-                            std::optional<IPAddr> siaddr_hint) {
-  IPAddr sdr_iaddr;
-  if (siaddr_hint.has_value())
-    sdr_iaddr = siaddr_hint.value();
-  else
-    sdr_iaddr = select_src_addr(tgt_iaddr, iface);
-
+                            IPAddr siaddr) {
   if (tgt_iaddr.is_v4()) {
-    PBuf solicit_packet;
-    solicit_packet->reserve_headers();
-    solicit_packet->iface = iface;
-    ARPHeader arp_hdr = solicit_packet->construct_net_hdr<ARPHeader>().value();
-    arp_hdr.op() = ARPOp::REQUEST;
-    arp_hdr.sdr_haddr() = iface->addr();
-    arp_hdr.sdr_iaddr() = sdr_iaddr.v4();
-    arp_hdr.tgt_haddr() = thaddr_hint.value_or(HWAddr::zero());
-    arp_hdr.tgt_iaddr() = tgt_iaddr.v4();
-    solicit_packet->unmask(arp_hdr.size());
-    output(std::move(solicit_packet));
+    solicit_haddr_v4(iface, tgt_iaddr.v4(), siaddr.v4(), thaddr_hint);
   } else {
-    IPAddr dst_addr;
-    if (thaddr_hint.has_value())
-      dst_addr = tgt_iaddr;
-    else
-      dst_addr = IPAddr::solicited_node(tgt_iaddr);
-
-    NDPNeighborSolicitation solicit_msg;
-    PBuf solicit_packet;
-    solicit_packet->reserve_headers();
-    ICMPHeader icmp_hdr = solicit_packet
-                              ->construct_tspt_hdr<ICMPHeader>(
-                                  IPVersion::V6, solicit_msg, 0, iface->addr())
-                              .value();
-    solicit_msg.target_addr() = tgt_iaddr;
-    solicit_packet->unmask(icmp_hdr.size());
-
-    IPHeader ip_hdr =
-        solicit_packet
-            ->construct_net_hdr<IPHeader>(IPVersion::V6, IPProto::ICMPv6)
-            .value();
-    ip_hdr.src_addr() = sdr_iaddr;
-    ip_hdr.dst_addr() = dst_addr;
-    ip_hdr.ttl() = 255;
-
-    solicit_packet->iface = iface;
-    solicit_packet->nh_haddr =
-        thaddr_hint.value_or(tgt_iaddr.multicast_haddr());
-    output(std::move(solicit_packet));
+    solicit_haddr_v6(iface, tgt_iaddr, siaddr, thaddr_hint);
   }
 }
 
@@ -643,7 +668,7 @@ void IPStack::mcast_leave(Interface *iface, IPAddr group_addr) {
   if (group_addr.is_v4()) {
     igmp_send_report(IGMPMessageType::LEAVE_GROUP, iface, group_addr.v4());
   } else {
-    mld_send_report(iface, group_addr, false);
+    mld_send_report(iface, group_addr, true);
   }
 }
 
@@ -652,11 +677,10 @@ void IPStack::igmp_send_report(IGMPMessageType msg_type, Interface *iface,
   PBuf report_packet;
   report_packet->iface = iface;
   report_packet->reserve_headers();
-  auto igmp_hdr = report_packet->construct_net_hdr<IGMPHeader>().value();
+  auto igmp_hdr = report_packet->construct_tspt_hdr<IGMPHeader>().value();
   igmp_hdr.type() = msg_type;
   igmp_hdr.group_addr() = group_addr;
   report_packet->unmask(igmp_hdr.size());
-  igmp_hdr.checksum() = inet_csum(report_packet->buf());
   IPRAOption ra_opt;
   auto ip_hdr =
       report_packet
@@ -665,7 +689,7 @@ void IPStack::igmp_send_report(IGMPMessageType msg_type, Interface *iface,
 
   switch (msg_type) {
   case IGMPMessageType::LEAVE_GROUP:
-    ip_hdr.dst_addr() = IPv4Addr{224, 0, 0, 2};
+    ip_hdr.dst_addr() = IPv4Addr::all_routers();
     break;
   default:
     ip_hdr.dst_addr() = group_addr;
@@ -701,7 +725,7 @@ void IPStack::mld_send_report(Interface *iface, IPAddr mcast_addr, bool leave) {
 void IPStack::assign_ip(Interface *iface, IPAddr address, uint8_t prefix_len) {
   AddrState &addr_state = ips.at(address);
   addr_state.iface = iface;
-  addr_state.prefix_len = prefix_len + (address.is_v4() ? 96 : 0);
+  addr_state.prefix_len = address.prefix_len(prefix_len);
 
   if (!address.is_v4()) {
     addr_state.tentative = true;

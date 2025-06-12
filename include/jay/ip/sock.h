@@ -2,6 +2,7 @@
 
 #include "jay/pbuf.h"
 #include "jay/util/hashtable.h"
+#include "jay/util/rng.h"
 #include <functional>
 #include <random>
 #include <unordered_set>
@@ -139,14 +140,11 @@ private:
                           IPAddr local_addr,
                           std::optional<IPAddr> remote_addr = std::nullopt,
                           uint16_t remote_port = 0) {
-    std::mt19937 mt;
-    std::uniform_int_distribution<uint16_t> port_unif(min, max);
-
     uint16_t tried_ports = 0;
     uint16_t num_ports = max - min;
     uint16_t local_port = 0;
     while (tried_ports < num_ports) {
-      local_port = port_unif(mt);
+      local_port = random_int(min, max);
       if (remote_addr.has_value()) {
         if (!connected.contains({proto, local_addr, local_port,
                                  remote_addr.value(), remote_port}))

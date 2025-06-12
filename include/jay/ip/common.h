@@ -2,6 +2,7 @@
 
 #include "jay/buf/sbuf.h"
 #include "jay/eth.h"
+#include "jay/util/trie.h"
 #include <array>
 #include <cstdint>
 #include <numeric>
@@ -46,6 +47,14 @@ struct IPv4Addr : public std::array<uint8_t, 4> {
     return {0, 0, 0, 0};
   }
 
+  static IPv4Addr all_systems() {
+    return {224, 0, 0, 1};
+  }
+
+  static IPv4Addr all_routers() {
+    return {224, 0, 0, 2};
+  }
+
   friend std::ostream &operator<<(std::ostream &os, const IPv4Addr &addr) {
     os << std::format("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3]);
     return os;
@@ -57,6 +66,12 @@ struct IPv4Addr : public std::array<uint8_t, 4> {
 
   bool is_broadcast() const {
     return ((*this)[0] == 255) && ((*this)[1] == 255) && ((*this)[2] == 255) && ((*this)[3] == 255);
+  }
+
+  bool is_directed_broadcast(uint8_t prefix_len) {
+    auto this_bits = AsBits {*this};
+    return std::ranges::all_of(this_bits.begin() + prefix_len,
+                                this_bits.end(), [](bool b) { return b; });
   }
 
   bool is_multicast() const {
@@ -98,6 +113,14 @@ struct IPAddr : public std::array<uint8_t, 16> {
 
   static IPAddr any() {
     return {};
+  }
+
+  uint8_t prefix_len(uint8_t prefix) {
+    return prefix + (is_v4() ? 96 : 0);
+  }
+
+  bool is_directed_broadcast(uint8_t prefix_len) {
+    return is_v4() && v4().is_directed_broadcast(prefix_len - 96);
   }
 
   bool is_v4() const { 

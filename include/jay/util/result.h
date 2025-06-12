@@ -65,4 +65,8 @@ public:
 private:
   std::variant<std::monostate, TValue, TError> res;
 };
+
+#define UNWRAP_RETURN(result) ({auto _res = result; if (_res.has_error()) return; _res.value();})
+#define UNWRAP_RETURN_ERR(result, err) ({auto _res = result; if (_res.has_error()) return ResultError(err); _res.value();})
+#define UNWRAP_PROPAGATE(result) ({auto _res = result; if (_res.has_error()) return ResultError(_res.error()); _res.value();})
 }; // namespace jay

@@ -32,14 +32,14 @@ std::optional<PBuf> NeighCache::resolve(PBuf packet) {
 }
 
 void NeighCache::start_solicit(Interface *iface, ip::IPAddr tgt_iaddr,
-                               std::optional<ip::IPAddr> siaddr_hint,
+                               ip::IPAddr siaddr,
                                std::optional<HWAddr> thaddr_hint) {
   Neighbour &neigh = cache[tgt_iaddr];
   neigh.state = (neigh.state == NeighState::INCOMPLETE) ? NeighState::INCOMPLETE : NeighState::PROBE;
   neigh.retry_ctr = 0;
-  solicit_fn(iface, tgt_iaddr, thaddr_hint, siaddr_hint);
+  solicit_fn(iface, tgt_iaddr, thaddr_hint, siaddr);
   neigh.timer =
-      timers.create(retrans_timeout, [this, iface, tgt_iaddr, siaddr_hint,
+      timers.create(retrans_timeout, [this, iface, tgt_iaddr, siaddr,
                                       thaddr_hint, &neigh](Timer *timer) {
         neigh.retry_ctr += 1;
         if (neigh.retry_ctr == this->max_query_retries) {
@@ -47,7 +47,7 @@ void NeighCache::start_solicit(Interface *iface, ip::IPAddr tgt_iaddr,
           return;
         }
         if (neigh.state != NeighState::REACHABLE) {
-          solicit_fn(iface, tgt_iaddr, thaddr_hint, siaddr_hint);
+          solicit_fn(iface, tgt_iaddr, thaddr_hint, siaddr);
           timer->reset();
         }
       });

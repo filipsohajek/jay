@@ -14,6 +14,7 @@ public:
 
   struct Destination {
     Route route;
+    std::optional<IPAddr> src_iaddr;
   };
 
   enum class Error {
@@ -54,7 +55,7 @@ public:
       packet->nh_iaddr = packet->ip().dst_addr();
     }
 
-    if (dst->route.src_iaddr.has_value() && !packet->forwarded) {
+    if (IPAddr(packet->ip().src_addr()).is_any() && !packet->force_source_ip && dst->route.src_iaddr.has_value() && !packet->forwarded) {
       packet->ip().src_addr() = dst->route.src_iaddr.value();
     }
     packet->iface = dst->route.iface;
