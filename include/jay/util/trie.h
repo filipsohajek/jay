@@ -15,9 +15,9 @@ private:
   struct BitRef {
     operator bool() const { return (*as_bits)[index]; }
 
-    BitRef &operator=(bool state) { as_bits->set(index, state); }
+    BitRef &operator=(bool state) { as_bits->set(index, state); return *this; }
 
-    AsBits<T> *as_bits;
+    AsBits<T>* as_bits;
     size_t index;
   };
   struct Iterator {
@@ -43,26 +43,27 @@ private:
       it += increment;
       return it;
     }
-
     reference operator*() const { return {as_bits, index}; }
 
     size_t operator-(const Iterator &rhs) { return index - rhs.index; }
     bool operator==(const Iterator &) const = default;
 
-    AsBits<T> *as_bits;
+    AsBits<T>* as_bits;
     size_t index;
   };
   static const size_t SIZE = sizeof(T);
 
 public:
-  T value;
-  size_t length = 8 * sizeof(T);
+  std::reference_wrapper<T> value;
+  size_t length;
 
-  bool operator[](size_t index) { return (value[index / 8] >> (7 - index % 8)) & 0x1; }
+  AsBits(T& value, size_t length = 8*sizeof(T)) : value(value), length(length) {}
+
+  bool operator[](size_t index) const { return (value.get()[index / 8] >> (7 - index % 8)) & 0x1; }
 
   void set(size_t index, bool state) {
     size_t offset = 7 - index % 8;
-    value[index / 8] = (value[index / 8] & ~(1 << offset)) | (state << offset);
+    value.get()[index / 8] = (value.get()[index / 8] & ~(1 << offset)) | (state << offset);
   }
 
   size_t size() const { return length; }
@@ -78,32 +79,34 @@ public:
     Node() = default;
 
     template <typename... ArgT>
-    Node(AsBits<TKey> key, ArgT &&...args)
-        : key(key), value(std::make_unique<TVal>(std::forward<ArgT>(args)...)) {
+    Node(TKey key, size_t key_len, ArgT &&...args)
+        : key(key), key_len(key_len), value(std::make_unique<TVal>(std::forward<ArgT>(args)...)) {
     }
 
-    Node(AsBits<TKey> key, std::unique_ptr<TVal> value)
-        : key(key), value(std::move(value)) {}
+    Node(TKey key, size_t key_len, std::unique_ptr<TVal> value)
+        : key(key), key_len(key_len), value(std::move(value)) {}
 
-    AsBits<TKey> key = {TKey(), 0};
+    TKey key {};
+    size_t key_len = 0;
 
     std::unique_ptr<Node> left = nullptr, right = nullptr;
     std::unique_ptr<TVal> value = nullptr;
 
     template <typename... ArgT>
-    Node *split(AsBits<TKey> new_key, size_t offset, ArgT &&...args) {
+    Node *split(TKey new_key, size_t new_key_len, size_t offset, ArgT &&...args) {
       auto new_node =
-          std::make_unique<Node>(new_key, std::forward<ArgT>(args)...);
-      if (offset < key.size()) {
+          std::make_unique<Node>(new_key, new_key_len, std::forward<ArgT>(args)...);
+      AsBits new_key_bits {new_key, new_key_len};
+      if (offset < key_len) {
         std::unique_ptr<Node> old_node =
-            std::make_unique<Node>(key, std::move(value));
+            std::make_unique<Node>(key, key_len, std::move(value));
         old_node->left = std::move(left);
         old_node->right = std::move(right);
 
-        key = {key.value, offset};
+        key_len = offset;
         value = nullptr;
 
-        if (new_key[offset]) {
+        if (new_key_bits[offset]) {
           left = std::move(old_node);
           right = std::move(new_node);
           return right.get();
@@ -112,8 +115,8 @@ public:
           right = std::move(old_node);
           return left.get();
         }
-      } else if (offset < new_key.size()) {
-        if (new_key[offset]) {
+      } else if (offset < new_key_bits.size()) {
+        if (new_key_bits[offset]) {
           right = std::move(new_node);
           return right.get();
         } else {
@@ -146,7 +149,7 @@ private:
     }
 
     value_type operator*() const {
-      return std::make_pair(stack.top()->key.value, stack.top()->value.get());
+      return std::make_pair(stack.top()->key, stack.top()->value.get());
     }
 
     InorderIterator& operator++() {
@@ -190,18 +193,19 @@ public:
     using value_type = Node;
     using difference_type = ptrdiff_t;
 
-    MatchIterator(Node *node, AsBits<TKey> search_key)
-        : _node(node), search_key(search_key), search_offset(0) {}
+    MatchIterator(Node *node, TKey key, size_t key_len)
+        : _node(node), key(key), search_key(this->key, key_len), search_offset(0) {}
 
     MatchIterator& operator++() {
+      AsBits node_bits {_node->key, _node->key_len};
       auto mismatch = std::ranges::mismatch(
-          _node->key.begin() + search_offset, _node->key.end(),
+          node_bits.begin() + search_offset, node_bits.end(),
           search_key.begin() + search_offset, search_key.end());
-      size_t mismatch_off = std::distance(_node->key.begin(), mismatch.in1);
+      size_t mismatch_off = std::distance(node_bits.begin(), mismatch.in1);
       search_offset = mismatch_off;
       if (search_offset == search_key.size()) {
         end = true;
-      } else if (mismatch_off == _node->key.size()) {
+      } else if (mismatch_off == _node->key_len) {
         bool search_bit = *mismatch.in2;
         if (search_bit && (_node->right != nullptr))
           _node = _node->right.get();
@@ -222,9 +226,7 @@ public:
     }
 
     bool is_full_match() {
-      return std::ranges::equal(
-          search_key.begin(), search_key.end(),
-          _node->key.begin(), _node->key.end());
+      return std::ranges::equal(search_key, AsBits {_node->key, _node->key_len});
     }
 
     bool operator==(const EndSentinel &) const { return end; }
@@ -233,12 +235,13 @@ public:
 
     bool end = false;
     Node *_node;
+    TKey key;
     AsBits<TKey> search_key;
     size_t search_offset;
   };
 
   MatchIterator match_begin(TKey key, size_t key_len = KEY_FULL_SIZE) {
-    return {root.get(), {key, key_len}};
+    return {root.get(), key, key_len};
   }
 
   EndSentinel match_end() { return {}; }
@@ -249,7 +252,7 @@ public:
     auto it = match_begin(key, key_len);
     for (; it != match_end(); it++) {
     }
-    Node* new_node = (*it).split({key, key_len}, it.search_offset,
+    Node* new_node = (*it).split(key, key_len, it.search_offset,
                        std::forward<ArgT>(args)...);
     return *new_node->value;
   }
@@ -268,14 +271,14 @@ public:
     if (it.is_full_match()) {
       return *(*it).value;
     } else {
-      return *(*it).split({key, key_len}, it.search_offset)->value;
+      return *(*it).split(key, key_len, it.search_offset)->value;
     }
   }
 
   std::tuple<TKey, TVal*, size_t> match_longest(TKey key, size_t key_len = KEY_FULL_SIZE) {
     auto it = match_begin(key, key_len);
     for (; it != match_end(); it++) {}
-    return std::make_tuple((*it).key.value, (*it).value.get(), it.search_offset);
+    return std::make_tuple((*it).key, (*it).value.get(), it.search_offset);
   }
 
   void erase(TKey key, size_t key_len = KEY_FULL_SIZE) {
