@@ -38,7 +38,8 @@ public:
     auto size = Ts::size_hint();
     if (size > cur.size())
       return ResultError<Terr>{Terr::OUT_OF_BOUNDS};
-    strct.cur = cur.span().subspan(0, size);
+    strct.cur = cur.slice(0, size);
+    strct.cur.reset();
     return strct; 
   }
 

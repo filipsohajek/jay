@@ -133,11 +133,7 @@ int main() {
   stack2.ip.assign_ip(tap2.get(), jay::ip::IPv4Addr {10, 0, 0, 3}, 24);
   auto udp_send = stack2.ip.udp_sock();
   udp_send.connect(jay::ip::IPv4Addr {10, 0, 0, 2}, 12345);
-  jay::Buf buf(4);
-  *buf.begin() = 1;
-  *(buf.begin() + 1) = 2;
-  *(buf.begin() + 2) = 3;
-  *(buf.begin() + 3) = 4;
+  jay::Buf buf(2000);
   udp_send.send(buf);
   while (true) {
     stack.poll();

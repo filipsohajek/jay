@@ -44,7 +44,7 @@ IPv4Header::construct(StructWriter cur, IPHeader &base_hdr,
   IPv4Header base_v4_hdr = base_hdr.v4();
   std::ranges::copy(base_v4_hdr.cursor().span().subspan(0, MIN_SIZE),
                     cur.span().begin());
-  IPv4Header hdr = UNWRAP_PROPAGATE(IPv4Header::read(cur));
+  IPv4Header hdr {cur};
 
   if (frag_data)
     *frag_data = UNWRAP_PROPAGATE(hdr.frag_data().read());
